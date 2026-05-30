@@ -1,0 +1,9 @@
+build/
+build_*/
+managed_components/
+sdkconfig
+sdkconfig.old
+*.log
+last_event.json
+.claude/
+.vscode/

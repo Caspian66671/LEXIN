@@ -1,0 +1,31 @@
+config SLAVE_IDF_TARGET_ESP32C6
+    bool
+    default y if IDF_TARGET_ESP32P4
+
+menu "WorkBuddy Configuration"
+
+    config WORKBUDDY_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+
+    config WORKBUDDY_WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+
+    config WORKBUDDY_WIFI_MAXIMUM_RETRY
+        int "WiFi maximum retry"
+        default 8
+
+    config WORKBUDDY_PROXY_BASE_URL
+        string "Fast local proxy base URL"
+        default "auto"
+
+    config WORKBUDDY_PROXY_PREFERRED_HOST
+        string "Preferred fast proxy host IP"
+        default "172.31.169.142"
+
+    config WORKBUDDY_PROXY_PORT
+        int "Fast local proxy port"
+        default 8787
+
+endmenu
