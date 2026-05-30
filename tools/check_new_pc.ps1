@@ -34,6 +34,14 @@ $gitReady = Test-CommandReady "git"
 
 Write-Check "Git" $gitReady "Install Git if you want to clone or push this project."
 Write-Check "Node.js" $nodeReady "Install Node.js 18 or newer to run the local proxy."
+if ($nodeReady) {
+    $nodeVersion = node --version
+    Write-Host "       Node version: $nodeVersion"
+    $nodeMajor = [int]($nodeVersion.TrimStart("v").Split(".")[0])
+    if ($nodeMajor -lt 18) {
+        Write-Host "       Warning: Node.js 18 or newer is recommended."
+    }
+}
 Write-Check "ESP-IDF" $idfReady "Install ESP-IDF 5.x, or open an ESP-IDF VSCode terminal."
 
 Write-Host ""

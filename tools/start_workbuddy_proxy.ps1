@@ -5,8 +5,35 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ProxyScript = Join-Path $Root "tools\workbuddy_proxy.js"
-$OutLog = Join-Path $Root "proxy.out.log"
-$ErrLog = Join-Path $Root "proxy.err.log"
+$LogSuffix = if ($Port -eq 8787) { "" } else { ".$Port" }
+$OutLog = Join-Path $Root "proxy$LogSuffix.out.log"
+$ErrLog = Join-Path $Root "proxy$LogSuffix.err.log"
+
+function Initialize-LogFile {
+    param(
+        [string]$Path,
+        [string[]]$Value,
+        [string]$Kind
+    )
+    try {
+        Set-Content -Encoding UTF8 -Path $Path -Value $Value
+        return $Path
+    } catch {
+        $Fallback = Join-Path $Root "proxy.$Port.$PID.$Kind.log"
+        Set-Content -Encoding UTF8 -Path $Fallback -Value $Value
+        Write-Host "Log file is busy, using $Fallback"
+        return $Fallback
+    }
+}
+
+function Get-NodeVersionText {
+    param([string]$NodePath)
+    try {
+        return (& $NodePath --version)
+    } catch {
+        return "unknown"
+    }
+}
 
 function Test-Proxy {
     try {
@@ -24,10 +51,29 @@ if (Test-Proxy) {
         throw "Proxy script not found: $ProxyScript"
     }
 
-    $NodePath = (Get-Command "node.exe" -ErrorAction Stop).Source
+    $NodeCommand = Get-Command "node.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $NodeCommand) {
+        Write-Host "Node.js was not found."
+        Write-Host "Install Node.js 18 or newer, then run start_demo.bat again."
+        exit 1
+    }
+
+    $NodePath = $NodeCommand.Source
+    $NodeVersion = Get-NodeVersionText $NodePath
     $NodeArgs = "`"$ProxyScript`" --port $Port"
 
+    $OutLog = Initialize-LogFile -Path $OutLog -Kind "out" -Value @(
+        "WorkBuddy proxy startup",
+        "Root: $Root",
+        "Node: $NodePath",
+        "Node version: $NodeVersion",
+        "Script: $ProxyScript",
+        "Port: $Port"
+    )
+    $ErrLog = Initialize-LogFile -Path $ErrLog -Kind "err" -Value @("")
+
     Write-Host "Starting WorkBuddy proxy on port $Port..."
+    Write-Host "Node.js: $NodeVersion"
     Start-Process -WindowStyle Hidden `
         -FilePath $NodePath `
         -ArgumentList $NodeArgs `
@@ -42,6 +88,7 @@ if (Test-Proxy) {
 
 if (-not (Test-Proxy)) {
     Write-Host "Proxy did not start. Check proxy.err.log."
+    Write-Host "Common causes: Node.js is missing, port $Port is occupied, or antivirus blocked node.exe."
     if (Test-Path $ErrLog) {
         Get-Content $ErrLog -Tail 20
     }

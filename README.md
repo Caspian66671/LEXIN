@@ -106,6 +106,19 @@ new_pc_check.bat
 
 这个脚本会检查 Git、Node.js、ESP-IDF 命令行和项目关键文件是否齐全。ESP-IDF 项目的 `sdkconfig`、`build/`、`managed_components/` 不提交到仓库，新电脑构建时会自动根据 `sdkconfig.defaults` 和 `main/idf_component.yml` 生成/下载。
 
+启动本地代理时双击：
+
+```text
+start_demo.bat
+```
+
+如果失败，窗口会提示常见原因，同时把详细日志写到：
+
+```text
+proxy.err.log
+proxy.out.log
+```
+
 构建固件可以在 ESP-IDF 终端里双击或运行：
 
 ```text
