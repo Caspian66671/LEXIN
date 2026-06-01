@@ -10,7 +10,6 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_wifi_default_config.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
