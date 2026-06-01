@@ -331,7 +331,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.url === "/health") {
-      send(res, 200, "OK");
+      send(res, 200, "OK ENTERPRISE");
       return;
     }
     send(res, 404, "NOT FOUND");

@@ -38,15 +38,50 @@ function Get-NodeVersionText {
 function Test-Proxy {
     try {
         $health = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 2
-        return ($health.Content.Trim() -eq "OK")
+        return ($health.Content.Trim().StartsWith("OK"))
     } catch {
         return $false
     }
 }
 
+function Test-EnterpriseProxy {
+    try {
+        $insight = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/insight" -TimeoutSec 4
+        return ($insight.Content -like "*MODEL:*" -and $insight.Content -like "*INSIGHT:*")
+    } catch {
+        return $false
+    }
+}
+
+function Stop-WorkBuddyProxy {
+    $stopped = $false
+    $procs = Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -like "node*" -and $_.CommandLine -like "*workbuddy_proxy.js*" }
+    foreach ($proc in $procs) {
+        Stop-Process -Id $proc.ProcessId -Force
+        Write-Host "Stopped old WorkBuddy proxy process PID $($proc.ProcessId)."
+        $stopped = $true
+    }
+    return $stopped
+}
+
+$NeedsStart = $true
 if (Test-Proxy) {
-    Write-Host "WorkBuddy proxy already running on port $Port."
-} else {
+    if (Test-EnterpriseProxy) {
+        Write-Host "WorkBuddy enterprise proxy already running on port $Port."
+        $NeedsStart = $false
+    } else {
+        Write-Host "Old WorkBuddy proxy detected on port $Port. Restarting for enterprise insight..."
+        if (-not (Stop-WorkBuddyProxy)) {
+            Write-Host "No WorkBuddy node process was found to stop. Port $Port may be used by another program."
+        }
+        for ($i = 0; $i -lt 10 -and (Test-Proxy); $i++) {
+            Start-Sleep -Milliseconds 300
+        }
+    }
+}
+
+if ($NeedsStart) {
     if (-not (Test-Path $ProxyScript)) {
         throw "Proxy script not found: $ProxyScript"
     }
@@ -89,6 +124,14 @@ if (Test-Proxy) {
 if (-not (Test-Proxy)) {
     Write-Host "Proxy did not start. Check proxy.err.log."
     Write-Host "Common causes: Node.js is missing, port $Port is occupied, or antivirus blocked node.exe."
+    if (Test-Path $ErrLog) {
+        Get-Content $ErrLog -Tail 20
+    }
+    exit 1
+}
+
+if (-not (Test-EnterpriseProxy)) {
+    Write-Host "Proxy is running, but /insight is not available. Check proxy.err.log."
     if (Test-Path $ErrLog) {
         Get-Content $ErrLog -Tail 20
     }
