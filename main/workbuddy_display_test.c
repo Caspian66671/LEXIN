@@ -59,9 +59,10 @@ static char s_pet_weather_summary[96] = "天气待更新";
 static char s_pet_calendar_summary[96] = "日程待更新";
 static char s_pet_combined_reason[256] = "天气和日程待更新";
 static char s_pet_combined_tip[256] = "科研前先喝水";
-static char s_pet_edge_summary[128] = "本地：等待推理";
-static char s_pet_edge_meta[96] = "置信度--";
-static char s_pet_cloud_summary[128] = "DeepSeek：未接入";
+static char s_pet_edge_summary[128] = "等待推理";
+static char s_pet_edge_meta[96] = "ESP-DL  置信度--";
+static char s_pet_cloud_summary[128] = "未接入";
+static char s_pet_cloud_meta[96] = "等待云端模型";
 static const char *s_pet_weather_scene = "天气待更新";
 static const char *s_pet_time_scene = "日程待更新";
 static const char *s_pet_emotion_scene = "状态待更新";
@@ -105,6 +106,15 @@ static void lvgl_label_width(lv_obj_t *label, int width)
 {
     lv_obj_set_width(label, width);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+}
+
+static lv_obj_t *lvgl_center_label(lv_obj_t *parent, const char *text, int x, int y, int width,
+                                   const lv_font_t *font, uint32_t color)
+{
+    lv_obj_t *label = lvgl_label(parent, text, x, y, font, color);
+    lv_obj_set_width(label, width);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    return label;
 }
 
 static lv_obj_t *lvgl_card(lv_obj_t *parent, int x, int y, int w, int h,
@@ -207,6 +217,11 @@ static bool ascii_contains_ci(const char *text, const char *needle)
         }
     }
     return false;
+}
+
+static bool field_has_value(const char *value)
+{
+    return value != NULL && value[0] != '\0' && !ascii_contains_ci(value, "UNKNOWN");
 }
 
 static const char *weather_to_cn(const char *weather)
@@ -557,30 +572,71 @@ static const char *enterprise_insight_tip(const char *insight)
     return "按节奏完成科研";
 }
 
-static const char *enterprise_basis_text(const char *basis, const char *model)
+static const char *deepseek_insight_tip(const char *insight)
 {
-    if (ascii_contains_ci(model, "DEEPSEEK") && ascii_contains_ci(model, "ESP-DL")) {
-        return "DeepSeek建议  ESP-DL校验  天气日历";
+    if (ascii_contains_ci(insight, "UMBRELLA") || ascii_contains_ci(insight, "RISK")) {
+        return "天气有变，通勤留余量";
     }
-    if (ascii_contains_ci(model, "DEEPSEEK")) {
-        return "DeepSeek研判  当前时间  科研节奏";
+    if (ascii_contains_ci(insight, "BREAKFAST")) {
+        return "先吃早餐，上午效率更稳";
     }
-    if (ascii_contains_ci(model, "ESP-DL")) {
-        return "ESP-DL本地推理  天气日历  科研节奏";
+    if (ascii_contains_ci(insight, "LUNCH")) {
+        return "先吃午饭，下午再开题";
     }
-    if (ascii_contains_ci(model, "EDGE-INT8")) {
-        return "本地量化推理  天气日历  科研节奏";
+    if (ascii_contains_ci(insight, "DINNER")) {
+        return "先补晚饭，再做复盘";
     }
+    if (ascii_contains_ci(insight, "RESEARCH_FOCUS")) {
+        return "把实验主线推进一小步";
+    }
+    if (ascii_contains_ci(insight, "PAPER_READING")) {
+        return "读论文时先抓方法和结论";
+    }
+    if (ascii_contains_ci(insight, "EXPERIMENT")) {
+        return "先校准实验，再记录数据";
+    }
+    if (ascii_contains_ci(insight, "WRITE_THESIS")) {
+        return "写一段论文，别等状态完美";
+    }
+    if (ascii_contains_ci(insight, "EXERCISE")) {
+        return "今天安排运动，给大脑换气";
+    }
+    if (ascii_contains_ci(insight, "HYDRATE") || ascii_contains_ci(insight, "CARE")) {
+        return "喝水伸展，状态会回来";
+    }
+    if (ascii_contains_ci(insight, "BREAK") || ascii_contains_ci(insight, "RHYTHM")) {
+        return "暂停几分钟，再继续科研";
+    }
+    if (ascii_contains_ci(insight, "FOCUS")) {
+        return "先完成最重要的一件事";
+    }
+    if (ascii_contains_ci(insight, "PLAN")) {
+        return "今晚把明天任务排清楚";
+    }
+    if (ascii_contains_ci(insight, "SLEEP")) {
+        return "早点休息，明天效率更高";
+    }
+    if (ascii_contains_ci(insight, "REST")) {
+        return "休息一下，别把自己耗空";
+    }
+    if (ascii_contains_ci(insight, "SUN")) {
+        return "天气偏热，补水别拖";
+    }
+    return "按当前节奏稳步推进";
+}
+
+static const char *edge_basis_text(const char *basis)
+{
     if (ascii_contains_ci(basis, "HOLIDAY") || ascii_contains_ci(basis, "WEEKEND")) {
-        return "节假日  当前时间  休息运动";
-    }
-    if (ascii_contains_ci(basis, "WORKDAY")) {
-        return "工作日  当前时间  科研节奏";
+        return "ESP-DL量化模型  节假日  休息运动";
     }
     if (ascii_contains_ci(basis, "WEATHER_RAIN")) {
-        return "天气变化  当前时间  日程状态";
+        return "ESP-DL量化模型  天气风险  日历";
     }
-    return "天气数据  当前时间  日程状态";
+    if (ascii_contains_ci(basis, "WORKDAY")) {
+        return "ESP-DL量化模型  工作日  科研节奏";
+    }
+    return "ESP-DL量化模型  天气日历  科研节奏";
 }
 
 static void update_pet_tip_from_insight(const char *text)
@@ -606,23 +662,25 @@ static void update_pet_tip_from_insight(const char *text)
 
     s_pet_service_count++;
     s_pet_last_action = WORKBUDDY_ACTION_AI_INSIGHT;
-    s_pet_tip = enterprise_insight_tip(insight);
+    const char *edge_value = field_has_value(edge_insight) ? edge_insight : insight;
+    const bool cloud_ready = ascii_contains_ci(cloud_model, "DEEPSEEK") && field_has_value(cloud_insight);
+    s_pet_tip = enterprise_insight_tip(edge_value);
     s_pet_reason = "硕士研伴建议";
     s_pet_weather_scene = ascii_contains_ci(basis, "WEATHER_RAIN") ? "天气风险" : "天气稳定";
     s_pet_time_scene = (ascii_contains_ci(basis, "HOLIDAY") || ascii_contains_ci(basis, "WEEKEND")) ? "休息节奏" : "科研节奏";
     s_pet_emotion_scene = "研伴建议";
-    s_pet_model_tip = ascii_contains_ci(model, "ESP-DL") ? "ESP-DL 本地推理" :
+    s_pet_model_tip = (ascii_contains_ci(model, "DEEPSEEK") && ascii_contains_ci(model, "ESP-DL")) ? "ESP-DL + DeepSeek 双模型" :
+                      ascii_contains_ci(model, "ESP-DL") ? "ESP-DL 本地推理" :
                       ascii_contains_ci(model, "EDGE-INT8") ? "本地量化推理" :
                       ascii_contains_ci(model, "DEEPSEEK") ? "DeepSeek 已接入" : "离线建议";
-    snprintf(s_pet_edge_summary, sizeof(s_pet_edge_summary), "本地：%s",
-             enterprise_insight_tip(edge_insight[0] != '\0' ? edge_insight : insight));
-    snprintf(s_pet_edge_meta, sizeof(s_pet_edge_meta), "置信度%.8s  延迟%.12s",
-             edge_conf[0] != '\0' ? edge_conf : "--",
-             edge_lat[0] != '\0' ? edge_lat : "--");
-    snprintf(s_pet_cloud_summary, sizeof(s_pet_cloud_summary), "DeepSeek：%s",
-             ascii_contains_ci(cloud_model, "DEEPSEEK") && cloud_insight[0] != '\0'
-                ? enterprise_insight_tip(cloud_insight)
-                : "未接入");
+    snprintf(s_pet_edge_summary, sizeof(s_pet_edge_summary), "%s", enterprise_insight_tip(edge_value));
+    snprintf(s_pet_edge_meta, sizeof(s_pet_edge_meta), "ESP-DL  置信度%.8s  延迟%.12s",
+             field_has_value(edge_conf) ? edge_conf : "--",
+             field_has_value(edge_lat) ? edge_lat : "--");
+    snprintf(s_pet_cloud_summary, sizeof(s_pet_cloud_summary), "%s",
+             cloud_ready ? deepseek_insight_tip(cloud_insight) : "未接入");
+    snprintf(s_pet_cloud_meta, sizeof(s_pet_cloud_meta), "%s",
+             cloud_ready ? "DeepSeek云端研判" : "请先连接DeepSeek");
 
     if (ascii_contains_ci(risk, "HIGH")) {
         s_pet_state = "贴心提醒";
@@ -635,8 +693,8 @@ static void update_pet_tip_from_insight(const char *text)
         s_pet_accent = 0x1c98d2;
     }
 
-    snprintf(s_pet_combined_reason, sizeof(s_pet_combined_reason), "%s", enterprise_basis_text(basis, model));
-    snprintf(s_pet_combined_tip, sizeof(s_pet_combined_tip), "%s", s_pet_tip);
+    snprintf(s_pet_combined_reason, sizeof(s_pet_combined_reason), "%s", edge_basis_text(basis));
+    snprintf(s_pet_combined_tip, sizeof(s_pet_combined_tip), "%s", s_pet_edge_summary);
 }
 
 static void update_pet_tip_querying(workbuddy_action_id_t action_id)
@@ -832,6 +890,47 @@ static void lvgl_draw_sun_cloud(lv_obj_t *parent)
     lv_obj_set_style_radius(c2, LV_RADIUS_CIRCLE, 0);
 }
 
+static void lvgl_draw_weather_app_icon(lv_obj_t *parent, int x, int y)
+{
+    lv_obj_t *icon = lvgl_card(parent, x, y, 104, 104, 0x238dff, 24);
+    lvgl_set_vertical_gradient(icon, 0x30c9ff, 0x1b82ff);
+    lv_obj_set_style_border_width(icon, 1, 0);
+    lv_obj_set_style_border_color(icon, lv_color_hex(0x8fe2ff), 0);
+
+    lvgl_card(icon, 18, 18, 44, 44, 0xffd449, LV_RADIUS_CIRCLE);
+    lvgl_card(icon, 35, 54, 54, 24, 0xffffff, 12);
+    lvgl_card(icon, 26, 44, 30, 30, 0xffffff, LV_RADIUS_CIRCLE);
+    lvgl_card(icon, 48, 38, 38, 38, 0xffffff, LV_RADIUS_CIRCLE);
+    lvgl_center_label(icon, "晴", 0, 78, 104, &workbuddy_cn_20, 0xffffff);
+}
+
+static void lvgl_draw_calendar_app_icon(lv_obj_t *parent, int x, int y)
+{
+    lv_obj_t *icon = lvgl_card(parent, x, y, 104, 104, 0xfffbf4, 24);
+    lv_obj_set_style_border_width(icon, 1, 0);
+    lv_obj_set_style_border_color(icon, lv_color_hex(0xffd997), 0);
+
+    lvgl_card(icon, 0, 0, 104, 36, 0xffa600, 24);
+    lvgl_card(icon, 0, 22, 104, 20, 0xffa600, 0);
+    lvgl_center_label(icon, "JUN", 0, 8, 104, &lv_font_montserrat_20, 0xffffff);
+    lvgl_center_label(icon, "15", 0, 42, 104, &lv_font_montserrat_32, 0x10283e);
+    lvgl_center_label(icon, "日程", 0, 78, 104, &workbuddy_cn_20, 0x9a6500);
+}
+
+static void lvgl_draw_ai_app_icon(lv_obj_t *parent, int x, int y)
+{
+    lv_obj_t *icon = lvgl_card(parent, x, y, 104, 104, 0x9465ff, 24);
+    lvgl_set_vertical_gradient(icon, 0xa886ff, 0x7052f5);
+    lv_obj_set_style_border_width(icon, 1, 0);
+    lv_obj_set_style_border_color(icon, lv_color_hex(0xc9b8ff), 0);
+
+    lvgl_card(icon, 22, 22, 10, 10, 0xffffff, LV_RADIUS_CIRCLE);
+    lvgl_card(icon, 74, 24, 8, 8, 0xffffff, LV_RADIUS_CIRCLE);
+    lvgl_card(icon, 26, 74, 8, 8, 0xffffff, LV_RADIUS_CIRCLE);
+    lvgl_center_label(icon, "AI", 0, 34, 104, &lv_font_montserrat_32, 0xffffff);
+    lvgl_center_label(icon, "研伴", 0, 72, 104, &workbuddy_cn_20, 0xf3efff);
+}
+
 static void lvgl_init_display(void)
 {
     if (s_panel == NULL || s_lvgl_ready) {
@@ -907,16 +1006,13 @@ static bool lvgl_show_launcher(void)
     lvgl_label(analysis_btn, "查看洞察", 24, 8, &workbuddy_cn_20, s_pet_accent);
 
     lv_obj_t *panel = lvgl_glass_card(scr, 456, 132, 486, 344, 28);
-    lvgl_card(panel, 44, 54, 104, 104, 0x238dff, 24);
-    lvgl_card(panel, 190, 54, 104, 104, 0xff9f22, 24);
-    lvgl_card(panel, 336, 54, 104, 104, 0x9465ff, 24);
-    lvgl_label(panel, "天气提醒", 58, 174, &workbuddy_cn_20, 0x10283e);
-    lvgl_label(panel, "日程提醒", 204, 174, &workbuddy_cn_20, 0x10283e);
-    lvgl_label(panel, "研伴建议", 350, 174, &workbuddy_cn_20, 0x10283e);
-    lvgl_label(panel, "晴", 82, 88, &workbuddy_cn_20, 0xffffff);
-    lvgl_label(panel, "15", 226, 80, &lv_font_montserrat_32, 0xffffff);
-    lvgl_label(panel, "AI", 374, 84, &lv_font_montserrat_20, 0xffffff);
-    lvgl_label(panel, "轻触选择功能", 164, 270, &workbuddy_cn_20, 0x577489);
+    lvgl_draw_weather_app_icon(panel, 44, 48);
+    lvgl_draw_calendar_app_icon(panel, 190, 48);
+    lvgl_draw_ai_app_icon(panel, 336, 48);
+    lvgl_center_label(panel, "天气提醒", 44, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "日程提醒", 190, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "研伴建议", 336, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "天气  日历  双模型研伴", 0, 270, 486, &workbuddy_cn_20, 0x577489);
 
     lvgl_port_unlock();
     return true;
@@ -936,25 +1032,28 @@ static bool lvgl_show_suggestion_page(void)
     lvgl_label(scr, "返回", 32, 28, &workbuddy_cn_20, 0xffffff);
     lvgl_label(scr, "研伴建议", 110, 24, &workbuddy_cn_28, 0xffffff);
 
-    lv_obj_t *main_card = lvgl_glass_card(scr, 92, 132, 430, 340, 28);
-    lvgl_label(main_card, "硕士研伴", 40, 34, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(main_card, "当前建议", 42, 92, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *main_card = lvgl_glass_card(scr, 78, 132, 438, 340, 28);
+    lvgl_label(main_card, "ESP-DL模型", 40, 34, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(main_card, "本地推理结果", 42, 92, &workbuddy_cn_20, 0x577489);
     lv_obj_t *tip_label = lvgl_label(main_card, s_pet_combined_tip, 42, 124, &workbuddy_cn_28, s_pet_accent);
     lvgl_label_width(tip_label, 330);
     lvgl_label(main_card, "分析依据", 42, 190, &workbuddy_cn_20, 0x577489);
     lv_obj_t *reason_label = lvgl_label(main_card, s_pet_combined_reason, 42, 222, &workbuddy_cn_20, 0x10283e);
     lvgl_label_width(reason_label, 330);
+    lv_obj_t *edge_meta = lvgl_label(main_card, s_pet_edge_meta, 42, 282, &workbuddy_cn_20, 0x577489);
+    lvgl_label_width(edge_meta, 330);
 
-    lv_obj_t *ai_card = lvgl_glass_card(scr, 556, 132, 360, 340, 28);
-    lvgl_label(ai_card, "推理结果", 44, 34, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(ai_card, "本地推理", 46, 88, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *edge_label = lvgl_label(ai_card, s_pet_edge_summary, 46, 120, &workbuddy_cn_20, s_pet_accent);
-    lvgl_label_width(edge_label, 260);
-    lv_obj_t *edge_meta = lvgl_label(ai_card, s_pet_edge_meta, 46, 154, &workbuddy_cn_20, 0x577489);
-    lvgl_label_width(edge_meta, 260);
-    lvgl_label(ai_card, "DeepSeek建议", 46, 208, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *cloud_label = lvgl_label(ai_card, s_pet_cloud_summary, 46, 240, &workbuddy_cn_20, 0x10283e);
-    lvgl_label_width(cloud_label, 260);
+    lv_obj_t *ai_card = lvgl_glass_card(scr, 546, 132, 392, 340, 28);
+    lvgl_label(ai_card, "DeepSeek", 44, 34, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(ai_card, "云端建议", 46, 92, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *cloud_label = lvgl_label(ai_card, s_pet_cloud_summary, 46, 124, &workbuddy_cn_28, 0x9465ff);
+    lvgl_label_width(cloud_label, 300);
+    lvgl_label(ai_card, "模型说明", 46, 190, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *cloud_meta = lvgl_label(ai_card, s_pet_cloud_meta, 46, 222, &workbuddy_cn_20, 0x10283e);
+    lvgl_label_width(cloud_meta, 300);
+    lvgl_label(ai_card, "对比价值", 46, 264, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *compare_label = lvgl_label(ai_card, "同一输入  不同推理风格", 46, 294, &workbuddy_cn_20, 0x10283e);
+    lvgl_label_width(compare_label, 300);
 
     lvgl_port_unlock();
     return true;
