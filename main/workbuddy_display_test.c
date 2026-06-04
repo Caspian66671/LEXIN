@@ -326,6 +326,63 @@ static int parse_percent_value(const char *text)
     return seen_digit ? value : -1;
 }
 
+static int parse_int_value(const char *text, int fallback)
+{
+    if (text == NULL) {
+        return fallback;
+    }
+    int sign = 1;
+    int value = 0;
+    bool seen_digit = false;
+    for (const char *p = text; *p != '\0'; p++) {
+        if (*p == '-' && !seen_digit) {
+            sign = -1;
+        } else if (*p >= '0' && *p <= '9') {
+            seen_digit = true;
+            value = value * 10 + (*p - '0');
+        } else if (seen_digit) {
+            break;
+        }
+    }
+    return seen_digit ? value * sign : fallback;
+}
+
+static const char *weather_feel_text(const char *temp_value, const char *advice)
+{
+    int temp_c = parse_int_value(temp_value, 24);
+    if (ascii_contains_ci(advice, "HOT") || temp_c >= 30) {
+        return "体感偏热";
+    }
+    if (ascii_contains_ci(advice, "COLD") || temp_c <= 8) {
+        return "注意保暖";
+    }
+    return "体感舒适";
+}
+
+static const char *weather_outdoor_text(const char *weather, const char *rain, const char *advice)
+{
+    int rain_percent = parse_percent_value(rain);
+    if (ascii_contains_ci(weather, "RAIN") || rain_percent >= 50) {
+        return "出门带伞";
+    }
+    if (ascii_contains_ci(advice, "HOT") || ascii_contains_ci(advice, "SUN")) {
+        return "少晒多补水";
+    }
+    return "适合短时出门";
+}
+
+static const char *weather_study_text(const char *weather, const char *rain, const char *advice)
+{
+    int rain_percent = parse_percent_value(rain);
+    if (ascii_contains_ci(weather, "RAIN") || rain_percent >= 50) {
+        return "室内学习更稳";
+    }
+    if (ascii_contains_ci(advice, "HOT") || ascii_contains_ci(advice, "SUN")) {
+        return "补水后专注学习";
+    }
+    return "适合专注学习";
+}
+
 static int parse_hour_value(const char *time_value)
 {
     if (time_value == NULL || time_value[0] == '\0') {
@@ -688,6 +745,52 @@ static const char *deepseek_insight_tip(const char *insight)
     return "按当前节奏专注学习";
 }
 
+static bool insight_is_study(const char *insight)
+{
+    return ascii_contains_ci(insight, "RESEARCH_FOCUS") ||
+           ascii_contains_ci(insight, "PAPER_READING") ||
+           ascii_contains_ci(insight, "WRITE_THESIS") ||
+           ascii_contains_ci(insight, "PLAN") ||
+           ascii_contains_ci(insight, "TASK_SPLIT") ||
+           ascii_contains_ci(insight, "FOCUS");
+}
+
+static bool insight_is_care(const char *insight)
+{
+    return ascii_contains_ci(insight, "BREAKFAST") ||
+           ascii_contains_ci(insight, "LUNCH") ||
+           ascii_contains_ci(insight, "DINNER") ||
+           ascii_contains_ci(insight, "HYDRATE") ||
+           ascii_contains_ci(insight, "REST") ||
+           ascii_contains_ci(insight, "SLEEP") ||
+           ascii_contains_ci(insight, "EXERCISE");
+}
+
+static const char *aligned_deepseek_tip(const char *edge_insight, const char *cloud_insight)
+{
+    if (insight_is_study(edge_insight)) {
+        return insight_is_study(cloud_insight) ? deepseek_insight_tip(cloud_insight) :
+               "围绕本地学习建议补充";
+    }
+    if (ascii_contains_ci(edge_insight, "HYDRATE")) {
+        return "补水伸展后再学习";
+    }
+    if (ascii_contains_ci(edge_insight, "BREAKFAST") ||
+        ascii_contains_ci(edge_insight, "LUNCH") ||
+        ascii_contains_ci(edge_insight, "DINNER")) {
+        return "吃好后再回到学习";
+    }
+    if (ascii_contains_ci(edge_insight, "UMBRELLA") ||
+        ascii_contains_ci(edge_insight, "COMMUTE_CHECK")) {
+        return "出门留意天气变化";
+    }
+    if (insight_is_care(edge_insight)) {
+        return insight_is_care(cloud_insight) ? deepseek_insight_tip(cloud_insight) :
+               "先照顾状态再继续";
+    }
+    return deepseek_insight_tip(cloud_insight);
+}
+
 static const char *edge_basis_text(const char *basis)
 {
     if (ascii_contains_ci(basis, "TOUCH") || ascii_contains_ci(basis, "FOCUS_") ||
@@ -745,7 +848,7 @@ static void update_pet_tip_from_insight(const char *text)
              field_has_value(edge_conf) ? edge_conf : "--",
              field_has_value(edge_lat) ? edge_lat : "--");
     snprintf(s_pet_cloud_summary, sizeof(s_pet_cloud_summary), "%s",
-             cloud_ready ? deepseek_insight_tip(cloud_insight) : "未接入");
+             cloud_ready ? aligned_deepseek_tip(edge_value, cloud_insight) : "未接入");
     snprintf(s_pet_cloud_meta, sizeof(s_pet_cloud_meta), "%s",
              cloud_ready ? "DeepSeek云端研判" : "请先连接DeepSeek");
 
@@ -958,28 +1061,28 @@ static void lvgl_draw_sun_cloud(lv_obj_t *parent)
 {
     lv_obj_t *sun = lv_obj_create(parent);
     lv_obj_remove_style_all(sun);
-    lv_obj_set_pos(sun, 752, 176);
+    lv_obj_set_pos(sun, 752, 142);
     lv_obj_set_size(sun, 118, 118);
     lvgl_set_bg(sun, 0xffd23f);
     lv_obj_set_style_radius(sun, LV_RADIUS_CIRCLE, 0);
 
     lv_obj_t *cloud = lv_obj_create(parent);
     lv_obj_remove_style_all(cloud);
-    lv_obj_set_pos(cloud, 650, 274);
+    lv_obj_set_pos(cloud, 650, 240);
     lv_obj_set_size(cloud, 284, 82);
     lvgl_set_bg(cloud, 0xffffff);
     lv_obj_set_style_radius(cloud, 38, 0);
 
     lv_obj_t *c1 = lv_obj_create(parent);
     lv_obj_remove_style_all(c1);
-    lv_obj_set_pos(c1, 634, 232);
+    lv_obj_set_pos(c1, 634, 198);
     lv_obj_set_size(c1, 108, 108);
     lvgl_set_bg(c1, 0xffffff);
     lv_obj_set_style_radius(c1, LV_RADIUS_CIRCLE, 0);
 
     lv_obj_t *c2 = lv_obj_create(parent);
     lv_obj_remove_style_all(c2);
-    lv_obj_set_pos(c2, 734, 214);
+    lv_obj_set_pos(c2, 734, 180);
     lv_obj_set_size(c2, 134, 134);
     lvgl_set_bg(c2, 0xffffff);
     lv_obj_set_style_radius(c2, LV_RADIUS_CIRCLE, 0);
@@ -1265,6 +1368,9 @@ static bool lvgl_show_weather_result_page(const char *text)
     copy_field_value(text, "ADVICE:", advice, sizeof(advice));
     const char *weather_cn = weather_to_cn(weather);
     const char *suggestion_cn = weather_pet_suggestion(weather, rain, advice);
+    const char *feel_cn = weather_feel_text(temp, advice);
+    const char *outdoor_cn = weather_outdoor_text(weather, rain, advice);
+    const char *study_cn = weather_study_text(weather, rain, advice);
     update_pet_tip_from_weather(weather, rain, advice);
     snprintf(temp_number, sizeof(temp_number), "NA");
     size_t temp_i = 0;
@@ -1285,32 +1391,52 @@ static bool lvgl_show_weather_result_page(const char *text)
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
-    lvgl_set_vertical_gradient(scr, 0x54b6e9, 0xd9f4ff);
-    lvgl_card(scr, 0, 0, LCD_H_RES, 84, 0x2f9ad6, 0);
-    lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 84, LCD_H_RES, 132, 0x7bc9ef, 0), LV_OPA_40, 0);
-    lv_obj_t *hero = lvgl_glass_card(scr, 66, 112, 892, 318, 28);
-    lv_obj_t *rain_card = lvgl_glass_card(scr, 86, 454, 372, 106, 18);
-    lv_obj_t *advice_card = lvgl_glass_card(scr, 490, 454, 448, 106, 18);
+    lvgl_set_vertical_gradient(scr, 0x4aaee8, 0xdcf7ff);
+    lvgl_card(scr, 0, 0, LCD_H_RES, 84, 0x259bd6, 0);
+    lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 84, LCD_H_RES, 116, 0x82d5f3, 0), LV_OPA_40, 0);
+    lv_obj_t *hero = lvgl_glass_card(scr, 54, 106, 916, 224, 28);
+    lv_obj_t *rain_card = lvgl_glass_card(scr, 54, 350, 206, 86, 18);
+    lv_obj_t *feel_card = lvgl_glass_card(scr, 278, 350, 206, 86, 18);
+    lv_obj_t *outdoor_card = lvgl_glass_card(scr, 502, 350, 206, 86, 18);
+    lv_obj_t *study_card = lvgl_glass_card(scr, 726, 350, 244, 86, 18);
+    lv_obj_t *advice_card = lvgl_glass_card(scr, 54, 456, 916, 104, 22);
 
     lv_obj_t *back = lvgl_label(scr, "返回", 32, 23, &workbuddy_cn_20, 0xffffff);
     lv_obj_set_style_text_letter_space(back, 1, 0);
-    lvgl_label(hero, "西安", 36, 30, &workbuddy_cn_20, 0x10283e);
-    lvgl_label(hero, "天气提醒", 40, 84, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *temp_label = lvgl_label(hero, temp_number, 36, 110, &lv_font_montserrat_48, 0x0c253b);
+    lvgl_label(hero, "西安天气", 36, 26, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(hero, "当前天气", 40, 74, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *temp_label = lvgl_label(hero, temp_number, 36, 96, &lv_font_montserrat_48, 0x0c253b);
     lv_obj_set_style_text_letter_space(temp_label, 1, 0);
     lv_obj_t *unit_label = lvgl_label(hero, "°C", 0, 0, &lv_font_montserrat_28, 0x395467);
     lv_obj_align_to(unit_label, temp_label, LV_ALIGN_OUT_RIGHT_MID, 12, 2);
-    lvgl_label(hero, weather_cn, 40, 248, &workbuddy_cn_28, 0x194d69);
+    lvgl_label(hero, weather_cn, 40, 168, &workbuddy_cn_28, 0x194d69);
+    lvgl_label(hero, suggestion_cn, 180, 174, &workbuddy_cn_20, 0x1b78a0);
     lvgl_draw_sun_cloud(scr);
 
     lvgl_card_border(rain_card, 0xffffff, 1);
-    lvgl_label(rain_card, "降雨概率", 30, 18, &workbuddy_cn_20, 0x577489);
-    lvgl_label(rain_card, rain, 30, 48, &lv_font_montserrat_28, 0x10283e);
+    lvgl_label(rain_card, "降雨", 24, 14, &workbuddy_cn_20, 0x577489);
+    lvgl_label(rain_card, rain, 24, 42, &lv_font_montserrat_28, 0x10283e);
+    lvgl_label(rain_card, "短时参考", 104, 46, &workbuddy_cn_20, 0x577489);
+
+    lvgl_card_border(feel_card, 0xffffff, 1);
+    lvgl_label(feel_card, "体感", 24, 14, &workbuddy_cn_20, 0x577489);
+    lvgl_label(feel_card, feel_cn, 24, 44, &workbuddy_cn_20, 0x10283e);
+
+    lvgl_card_border(outdoor_card, 0xffffff, 1);
+    lvgl_label(outdoor_card, "出行", 24, 14, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *outdoor_label = lvgl_label(outdoor_card, outdoor_cn, 24, 44, &workbuddy_cn_20, 0x10283e);
+    lvgl_label_width(outdoor_label, 158);
+
+    lvgl_card_border(study_card, 0xffffff, 1);
+    lvgl_label(study_card, "学习", 24, 14, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *study_label = lvgl_label(study_card, study_cn, 24, 44, &workbuddy_cn_20, 0x10283e);
+    lvgl_label_width(study_label, 190);
 
     lvgl_card_border(advice_card, 0xffffff, 1);
-    lvgl_label(advice_card, "桌宠建议", 30, 18, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *advice_label = lvgl_label(advice_card, suggestion_cn, 30, 48, &workbuddy_cn_20, 0x10283e);
-    lvgl_label_width(advice_label, 388);
+    lvgl_label(advice_card, "天气研判", 32, 18, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(advice_card, "进入21维本地模型", 32, 62, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *advice_label = lvgl_label(advice_card, suggestion_cn, 418, 30, &workbuddy_cn_28, 0x1b78a0);
+    lvgl_label_width(advice_label, 440);
 
     lvgl_port_unlock();
     return true;

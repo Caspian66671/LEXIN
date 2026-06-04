@@ -476,10 +476,8 @@ bool workbuddy_edge_advisor_infer_text(const char *context_text, char *out_text,
     advisor_class_t cloud_cls;
     bool has_cloud = ascii_contains_ci(ctx.cloud_model, "DEEPSEEK") &&
                      class_from_name(ctx.cloud_insight, &cloud_cls);
-    advisor_class_t final_cls = has_cloud ? constrain_class(ctx, cloud_cls) : result.cls;
-    const char *final_risk = has_cloud && !ascii_contains_ci(ctx.cloud_risk, "HIGH")
-        ? risk_name(ctx, final_cls)
-        : risk_name(ctx, final_cls);
+    advisor_class_t final_cls = result.cls;
+    const char *final_risk = risk_name(ctx, final_cls);
 
     snprintf(out_text, out_size,
              "MODEL: %s\nINSIGHT: %s\nRISK: %s\n"
@@ -487,11 +485,11 @@ bool workbuddy_edge_advisor_infer_text(const char *context_text, char *out_text,
              "EDGE_MODEL: %s\nEDGE_FEATURES: %d\nEDGE_INSIGHT: %s\nEDGE_RISK: %s\nEDGE_CONF: %d\nEDGE_LAT: %dMS\n"
              "CLOUD_MODEL: %s\nCLOUD_INSIGHT: %s\nCLOUD_RISK: %s\n"
              "INTERACTION: W%d C%d A%d IDLE%d FOCUS%d ROUND%d %s",
-             has_cloud ? "DEEPSEEK+ESP-DL" : (result.espdl ? "ESP-DL" : "EDGE-INT8"),
+              has_cloud ? "ESP-DL+DEEPSEEK_REF" : (result.espdl ? "ESP-DL" : "EDGE-INT8"),
              class_name(final_cls),
              final_risk,
-             has_cloud ? "FINAL_DEEPSEEK_GROUNDED_BY_EDGE" :
-                         (is_rest_day(ctx) ? "FINAL_EDGE_REST_DAY" : "FINAL_EDGE_WORKDAY"),
+              has_cloud ? "FINAL_EDGE_PRIMARY_DEEPSEEK_REF" :
+                          (is_rest_day(ctx) ? "FINAL_EDGE_REST_DAY" : "FINAL_EDGE_WORKDAY"),
              ADVISOR_FEATURE_COUNT,
              ctx.weather,
              ctx.hour,
