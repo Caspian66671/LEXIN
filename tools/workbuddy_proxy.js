@@ -201,6 +201,7 @@ function timeText(data) {
     `DATE: ${data.date}`,
     `LUNAR: ${data.lunar}`,
     `HOLIDAY: ${data.holiday}`,
+    `DAY_TYPE: ${data.dayType}`,
   ].join("\n");
 }
 
@@ -277,7 +278,7 @@ function localInsight(weather, time) {
       model: "LOCAL",
       insight: "RESEARCH_FOCUS",
       risk,
-      basis: "WORKDAY MORNING_RESEARCH LOCAL_RULE",
+      basis: "WORKDAY FOCUS_STUDY LOCAL_RULE",
     };
   }
   if (time.hour >= 11 && time.hour < 14) {
@@ -293,7 +294,7 @@ function localInsight(weather, time) {
       model: "LOCAL",
       insight: "PAPER_READING",
       risk,
-      basis: "WORKDAY PAPER_READING LOCAL_RULE",
+      basis: "WORKDAY PAPER_NOTE LOCAL_RULE",
     };
   }
   if (time.hour >= 17 && time.hour < 19) {
@@ -307,9 +308,9 @@ function localInsight(weather, time) {
   if (time.hour >= 19 && time.hour < 22) {
     return {
       model: "LOCAL",
-      insight: "WRITE_THESIS",
+      insight: "PLAN",
       risk,
-      basis: "WORKDAY THESIS_WRITING LOCAL_RULE",
+      basis: "WORKDAY EVENING_REVIEW LOCAL_RULE",
     };
   }
   if (time.hour >= 22 || time.hour < 6) {
@@ -344,7 +345,6 @@ const INSIGHT_CHOICES = [
   "DINNER",
   "RESEARCH_FOCUS",
   "PAPER_READING",
-  "EXPERIMENT",
   "WRITE_THESIS",
   "EXERCISE",
   "REST",
@@ -357,13 +357,14 @@ const INSIGHT_CHOICES = [
 ];
 
 const DEEPSEEK_SYSTEM_PROMPT = [
-  "You are the DeepSeek model powering a smart desktop pet for a master's student.",
+  "You are the DeepSeek model powering a smart desktop pet for an electronics-information master's student.",
   "Return JSON only, with no explanation.",
   `insight must be one of: ${INSIGHT_CHOICES.join("/")}.`,
   "risk must be LOW, MEDIUM, or HIGH.",
   "basis must be short English tags.",
-  "On workdays, prioritize meal reminders, research focus, paper reading, experiments, thesis writing, and sleep.",
-  "On weekends or holidays, prioritize rest, exercise, meals, and gentle planning.",
+  "Do not assume the student is doing experiments unless explicit experiment data is provided.",
+  "On workdays, prioritize health, meals, hydration, focus study, paper reading, note taking, short review, exercise, and sleep.",
+  "On weekends or holidays, prioritize rest, exercise, meals, light reading, and gentle planning.",
 ].join(" ");
 
 function normalizeChoice(value, allowed, fallback) {
@@ -414,8 +415,8 @@ async function deepseekInsight(weather, time) {
             content: JSON.stringify({
               weather,
               time,
-              user_profile: "master_student",
-              task: "Pick the best life assistant category for the current time. Show master's-student routine intelligence and DeepSeek integration.",
+              user_profile: "electronics_information_master_student",
+              task: "Pick the best daily companion category from weather and calendar only. Prefer healthy routine, focused study, paper reading, notes, review, exercise, meals, or rest.",
             }),
           },
         ],
