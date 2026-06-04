@@ -1311,9 +1311,9 @@ static bool lvgl_show_pet_ai_page(void)
     lv_obj_t *pet_card = lvgl_glass_card(scr, 556, 132, 360, 340, 28);
     lvgl_label(pet_card, "桌宠反馈", 44, 34, &workbuddy_cn_28, 0x10283e);
     lvgl_draw_pet_avatar(pet_card, 44, 84);
-    lvgl_label(pet_card, "当前状态", 198, 96, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *state_label = lvgl_label(pet_card, s_pet_state, 198, 128, &workbuddy_cn_28, s_pet_accent);
-    lvgl_label_width(state_label, 110);
+    lvgl_label(pet_card, "提醒类型", 188, 96, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *state_label = lvgl_label(pet_card, s_pet_state, 188, 128, &workbuddy_cn_28, s_pet_accent);
+    lvgl_label_width(state_label, 138);
     lv_obj_t *pill = lvgl_card(pet_card, 54, 220, 252, 46, 0xe8f8ff, 23);
     lv_obj_set_style_bg_opa(pill, LV_OPA_80, 0);
     lv_obj_set_style_border_width(pill, 2, 0);
