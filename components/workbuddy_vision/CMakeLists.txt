@@ -3,6 +3,7 @@ set(vision_sources
     "port/camera_port.c"
     "port/vision_input.c"
     "port/vision_model.c"
+    "port/emotion_engine.c"
     "port/face_detector_adapter.c"
     "port/face_detector_esp_who.cpp"
     "port/expression_adapter.c"

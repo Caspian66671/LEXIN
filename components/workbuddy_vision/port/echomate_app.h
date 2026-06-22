@@ -21,6 +21,11 @@ esp_err_t vision_model_init(void);
 void vision_model_get_status(vision_pipeline_status_t *status);
 esp_err_t vision_model_run(const camera_frame_msg_t *frame,
                            vision_result_msg_t *result);
+esp_err_t emotion_engine_init(void);
+esp_err_t emotion_engine_update(const vision_result_msg_t *vision,
+                                const audio_feature_msg_t *audio,
+                                emotion_state_msg_t *state);
+const char *echomate_emotion_to_string(echomate_emotion_t emotion);
 
 #ifdef __cplusplus
 }

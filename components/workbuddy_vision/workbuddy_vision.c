@@ -15,7 +15,7 @@ static const char *TAG = "workbuddy_vision";
 #define VISION_TASK_STACK 8192
 #define VISION_TASK_PRIORITY 4
 #define VISION_START_DELAY_MS 2500
-#define VISION_FRAME_PERIOD_MS 100
+#define VISION_FRAME_PERIOD_MS (1000 / 30)
 #define VISION_PREVIEW_PIXELS \
     (WORKBUDDY_VISION_PREVIEW_WIDTH * WORKBUDDY_VISION_PREVIEW_HEIGHT)
 
@@ -75,6 +75,40 @@ static workbuddy_vision_backend_t map_backend(echomate_face_detector_backend_t b
     }
 }
 
+static workbuddy_vision_emotion_t map_emotion(echomate_emotion_t emotion)
+{
+    switch (emotion) {
+    case ECHOMATE_EMOTION_HAPPY:
+        return WORKBUDDY_VISION_EMOTION_HAPPY;
+    case ECHOMATE_EMOTION_LONELY:
+        return WORKBUDDY_VISION_EMOTION_LONELY;
+    case ECHOMATE_EMOTION_ALERT:
+        return WORKBUDDY_VISION_EMOTION_ALERT;
+    case ECHOMATE_EMOTION_SLEEPY:
+        return WORKBUDDY_VISION_EMOTION_SLEEPY;
+    case ECHOMATE_EMOTION_CALM:
+    default:
+        return WORKBUDDY_VISION_EMOTION_CALM;
+    }
+}
+
+static const char *emotion_response(echomate_emotion_t emotion)
+{
+    switch (emotion) {
+    case ECHOMATE_EMOTION_HAPPY:
+        return "I SEE YOU. THAT SMILE LOOKS BRIGHT.";
+    case ECHOMATE_EMOTION_ALERT:
+        return "THAT SOUNDED LOUD. I AM PAYING ATTENTION.";
+    case ECHOMATE_EMOTION_LONELY:
+        return "I AM STILL HERE WHEN YOU WANT TO TALK.";
+    case ECHOMATE_EMOTION_SLEEPY:
+        return "RESTING QUIETLY.";
+    case ECHOMATE_EMOTION_CALM:
+    default:
+        return "CALM AND LISTENING";
+    }
+}
+
 static void publish_snapshot(const workbuddy_vision_snapshot_t *snapshot)
 {
     portENTER_CRITICAL(&s_snapshot_lock);
@@ -92,6 +126,9 @@ static void vision_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(VISION_START_DELAY_MS));
 
     workbuddy_vision_snapshot_t snapshot = {0};
+    snapshot.emotion = WORKBUDDY_VISION_EMOTION_CALM;
+    snapshot.emotion_confidence = 68;
+    strlcpy(snapshot.response, "CALM AND LISTENING", sizeof(snapshot.response));
     snapshot.last_error = camera_port_init();
     camera_status_msg_t camera_status = {0};
     if (camera_port_get_status(&camera_status) == ESP_OK) {
@@ -102,6 +139,7 @@ static void vision_task(void *arg)
     }
 
     esp_err_t model_ret = vision_model_init();
+    esp_err_t emotion_ret = emotion_engine_init();
     snapshot.service_ready = model_ret == ESP_OK;
     if (snapshot.last_error == ESP_OK && model_ret != ESP_OK) {
         snapshot.last_error = model_ret;
@@ -112,6 +150,9 @@ static void vision_task(void *arg)
     ESP_LOGI(TAG, "vision service started camera=%d model=%s",
              snapshot.camera_ready,
              esp_err_to_name(model_ret));
+
+    TickType_t last_wake = xTaskGetTickCount();
+    audio_feature_msg_t audio = {0};
 
     while (true) {
         camera_frame_msg_t frame = {0};
@@ -147,6 +188,15 @@ static void vision_task(void *arg)
             snapshot.face_height = result.face_height;
             snapshot.input_width = result.input_width;
             snapshot.input_height = result.input_height;
+
+            emotion_state_msg_t emotion_state = {0};
+            if (emotion_ret == ESP_OK &&
+                emotion_engine_update(&result, &audio, &emotion_state) == ESP_OK) {
+                snapshot.emotion = map_emotion(emotion_state.emotion);
+                snapshot.emotion_confidence = emotion_state.confidence;
+                strlcpy(snapshot.response, emotion_response(emotion_state.emotion),
+                        sizeof(snapshot.response));
+            }
         } else {
             snapshot.face_detected = false;
             snapshot.expression = WORKBUDDY_VISION_EXPRESSION_UNKNOWN;
@@ -162,7 +212,7 @@ static void vision_task(void *arg)
         }
 
         publish_snapshot(&snapshot);
-        vTaskDelay(pdMS_TO_TICKS(VISION_FRAME_PERIOD_MS));
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(VISION_FRAME_PERIOD_MS));
     }
 }
 
@@ -175,6 +225,9 @@ esp_err_t workbuddy_vision_start(workbuddy_vision_callback_t callback, void *use
     s_callback = callback;
     s_callback_user_data = user_data;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
+    s_snapshot.emotion = WORKBUDDY_VISION_EMOTION_CALM;
+    s_snapshot.emotion_confidence = 68;
+    strlcpy(s_snapshot.response, "CALM AND LISTENING", sizeof(s_snapshot.response));
     s_snapshot.last_error = ESP_ERR_INVALID_STATE;
 
     s_preview_mutex = xSemaphoreCreateMutex();

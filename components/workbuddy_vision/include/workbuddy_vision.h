@@ -26,13 +26,23 @@ typedef enum {
     WORKBUDDY_VISION_BACKEND_ESP_WHO,
 } workbuddy_vision_backend_t;
 
+typedef enum {
+    WORKBUDDY_VISION_EMOTION_HAPPY = 0,
+    WORKBUDDY_VISION_EMOTION_CALM,
+    WORKBUDDY_VISION_EMOTION_LONELY,
+    WORKBUDDY_VISION_EMOTION_ALERT,
+    WORKBUDDY_VISION_EMOTION_SLEEPY,
+} workbuddy_vision_emotion_t;
+
 typedef struct {
     bool service_ready;
     bool camera_ready;
     bool face_detected;
     workbuddy_vision_expression_t expression;
     workbuddy_vision_backend_t backend;
+    workbuddy_vision_emotion_t emotion;
     uint8_t confidence;
+    uint8_t emotion_confidence;
     uint32_t inference_ms;
     uint32_t frame_id;
     uint16_t camera_fps_x10;
@@ -44,6 +54,7 @@ typedef struct {
     uint16_t input_height;
     int64_t updated_at_ms;
     esp_err_t last_error;
+    char response[96];
 } workbuddy_vision_snapshot_t;
 
 typedef void (*workbuddy_vision_callback_t)(const workbuddy_vision_snapshot_t *snapshot,

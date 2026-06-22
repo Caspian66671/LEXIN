@@ -1319,6 +1319,21 @@ static bool lvgl_show_suggestion_page(void)
 
 static const char *vision_expression_text(const workbuddy_vision_snapshot_t *snapshot)
 {
+    switch (snapshot->emotion) {
+    case WORKBUDDY_VISION_EMOTION_HAPPY:
+        return "HAPPY";
+    case WORKBUDDY_VISION_EMOTION_LONELY:
+        return "LONELY";
+    case WORKBUDDY_VISION_EMOTION_ALERT:
+        return "ALERT";
+    case WORKBUDDY_VISION_EMOTION_SLEEPY:
+        return "SLEEPY";
+    case WORKBUDDY_VISION_EMOTION_CALM:
+    default:
+        return "CALM";
+    }
+
+#if 0
     if (!snapshot->face_detected) {
         return "等待识别";
     }
@@ -1333,20 +1348,26 @@ static const char *vision_expression_text(const workbuddy_vision_snapshot_t *sna
     default:
         return "分析中";
     }
+#endif
 }
 
 static uint32_t vision_expression_accent(const workbuddy_vision_snapshot_t *snapshot)
 {
-    switch (snapshot->expression) {
-    case WORKBUDDY_VISION_EXPRESSION_HAPPY:
+    switch (snapshot->emotion) {
+    case WORKBUDDY_VISION_EMOTION_HAPPY:
         return 0x20a56b;
-    case WORKBUDDY_VISION_EXPRESSION_SAD:
+    case WORKBUDDY_VISION_EMOTION_ALERT:
         return 0x6f6bd9;
-    case WORKBUDDY_VISION_EXPRESSION_NEUTRAL:
+    case WORKBUDDY_VISION_EMOTION_CALM:
         return 0x1c98d2;
     default:
         return 0x71889a;
     }
+}
+
+static const char *vision_response_text(const workbuddy_vision_snapshot_t *snapshot)
+{
+    return snapshot->response[0] ? snapshot->response : "CALM AND LISTENING";
 }
 
 static bool refresh_emotion_preview(void)
@@ -1493,11 +1514,7 @@ static bool lvgl_refresh_emotion_live(const workbuddy_vision_snapshot_t *snapsho
     lv_label_set_text(s_emotion_online_label,
                       snapshot->service_ready ? "AI ONLINE" : "AI STARTING");
 
-    const char *response_text = snapshot->face_detected ?
-        (snapshot->expression == WORKBUDDY_VISION_EXPRESSION_HAPPY ?
-            "POSITIVE AND ENGAGED" : "CALM AND LISTENING") :
-        "WAITING FOR FACE";
-    lv_label_set_text(s_emotion_response_label, response_text);
+    lv_label_set_text(s_emotion_response_label, vision_response_text(snapshot));
 
     lvgl_port_unlock();
     return true;
@@ -1614,12 +1631,9 @@ static bool lvgl_show_emotion_page(void)
     lv_obj_set_style_border_width(response, 2, 0);
     lv_obj_set_style_border_color(response, lv_color_hex(0x147e9d), 0);
     lvgl_label(response, "RESPONSE", 22, 16, &lv_font_montserrat_20, 0x7edce8);
-    const char *response_text = snapshot.face_detected ?
-        (snapshot.expression == WORKBUDDY_VISION_EXPRESSION_HAPPY ?
-            "POSITIVE AND ENGAGED" : "CALM AND LISTENING") :
-        "WAITING FOR FACE";
     s_emotion_response_label = lvgl_label(
-        response, response_text, 22, 54, &lv_font_montserrat_28, 0xffffff);
+        response, vision_response_text(&snapshot), 22, 54,
+        &lv_font_montserrat_28, 0xffffff);
 
     lvgl_port_unlock();
     return true;
