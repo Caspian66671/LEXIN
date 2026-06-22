@@ -24,6 +24,7 @@
 #include "workbuddy_edge_advisor.h"
 #include "workbuddy_interaction.h"
 #include "workbuddy_triggers.h"
+#include "workbuddy_vision.h"
 
 static const char *TAG = "workbuddy";
 
@@ -56,6 +57,12 @@ typedef struct {
 } proxy_response_t;
 
 static proxy_response_t proxy_response;
+
+static void vision_snapshot_callback(const workbuddy_vision_snapshot_t *snapshot, void *user_data)
+{
+    (void)user_data;
+    workbuddy_screen_update_vision_context(snapshot);
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -387,6 +394,10 @@ void app_main(void)
     init_trigger_queue();
     workbuddy_start_screen_ui();
     workbuddy_edge_advisor_init();
+    esp_err_t vision_ret = workbuddy_vision_start(vision_snapshot_callback, NULL);
+    if (vision_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Vision service did not start: %s", esp_err_to_name(vision_ret));
+    }
     wifi_init_sta();
     xTaskCreate(proxy_warmup_task, "proxy_warmup", 4096, NULL, 5, NULL);
 

@@ -68,6 +68,9 @@ static const char *s_pet_weather_scene = "天气待更新";
 static const char *s_pet_time_scene = "日程待更新";
 static const char *s_pet_emotion_scene = "状态待更新";
 static workbuddy_emotion_state_t s_emotion_state = WORKBUDDY_EMOTION_UNKNOWN;
+static workbuddy_vision_snapshot_t s_vision_snapshot;
+static bool s_vision_snapshot_valid;
+static int64_t s_last_vision_page_refresh_ms;
 
 static void copy_field_value(const char *text, const char *key, char *out, size_t out_size);
 static int parse_percent_value(const char *text);
@@ -75,6 +78,7 @@ static int parse_hour_value(const char *time_value);
 static void refresh_pet_combined_tip(void);
 static bool lvgl_show_pet_ai_page(void);
 static bool lvgl_show_suggestion_page(void);
+static bool lvgl_show_emotion_page(void);
 static void update_pet_from_ai_context(void);
 
 static void lvgl_set_bg(lv_obj_t *obj, uint32_t color)
@@ -1126,6 +1130,20 @@ static void lvgl_draw_ai_app_icon(lv_obj_t *parent, int x, int y)
     lvgl_center_label(icon, "研伴", 0, 68, 104, &workbuddy_cn_20, 0xf3efff);
 }
 
+static void lvgl_draw_emotion_app_icon(lv_obj_t *parent, int x, int y)
+{
+    lv_obj_t *icon = lvgl_card(parent, x, y, 104, 104, 0x24b8a6, 24);
+    lvgl_set_vertical_gradient(icon, 0x42d7c5, 0x178fba);
+    lv_obj_set_style_border_width(icon, 1, 0);
+    lv_obj_set_style_border_color(icon, lv_color_hex(0x9aeee2), 0);
+
+    lv_obj_t *face = lvgl_card(icon, 23, 17, 58, 58, 0xffdf72, LV_RADIUS_CIRCLE);
+    lvgl_card(face, 15, 20, 7, 7, 0x16324f, LV_RADIUS_CIRCLE);
+    lvgl_card(face, 36, 20, 7, 7, 0x16324f, LV_RADIUS_CIRCLE);
+    lvgl_card(face, 20, 39, 20, 5, 0x16324f, 3);
+    lvgl_center_label(icon, "情绪", 0, 78, 104, &workbuddy_cn_20, 0xffffff);
+}
+
 static void lvgl_draw_pet_avatar(lv_obj_t *parent, int x, int y)
 {
     lv_obj_t *halo = lvgl_card(parent, x, y, 122, 122, 0xe8f8ff, LV_RADIUS_CIRCLE);
@@ -1223,13 +1241,15 @@ static bool lvgl_show_launcher(void)
     lvgl_label(analysis_btn, "查看洞察", 24, 8, &workbuddy_cn_20, s_pet_accent);
 
     lv_obj_t *panel = lvgl_glass_card(scr, 456, 132, 486, 344, 28);
-    lvgl_draw_weather_app_icon(panel, 44, 48);
-    lvgl_draw_calendar_app_icon(panel, 190, 48);
-    lvgl_draw_ai_app_icon(panel, 336, 48);
-    lvgl_center_label(panel, "天气提醒", 44, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "日程提醒", 190, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "研伴建议", 336, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "天气  日历  双模型研伴", 0, 270, 486, &workbuddy_cn_20, 0x577489);
+    lvgl_draw_weather_app_icon(panel, 14, 48);
+    lvgl_draw_calendar_app_icon(panel, 130, 48);
+    lvgl_draw_emotion_app_icon(panel, 246, 48);
+    lvgl_draw_ai_app_icon(panel, 362, 48);
+    lvgl_center_label(panel, "天气", 14, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "日历", 130, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "情绪", 246, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "研伴", 362, 170, 104, &workbuddy_cn_20, 0x10283e);
+    lvgl_center_label(panel, "天气  日历  边缘视觉  双模型研伴", 0, 270, 486, &workbuddy_cn_20, 0x577489);
 
     lvgl_port_unlock();
     return true;
@@ -1271,6 +1291,119 @@ static bool lvgl_show_suggestion_page(void)
     lvgl_label(ai_card, "对比价值", 46, 264, &workbuddy_cn_20, 0x577489);
     lv_obj_t *compare_label = lvgl_label(ai_card, "同一输入  不同推理风格", 46, 294, &workbuddy_cn_20, 0x10283e);
     lvgl_label_width(compare_label, 300);
+
+    lvgl_port_unlock();
+    return true;
+}
+
+static const char *vision_face_text(const workbuddy_vision_snapshot_t *snapshot)
+{
+    if (!snapshot->camera_ready) {
+        return "摄像头初始化中";
+    }
+    return snapshot->face_detected ? "已检测到人脸" : "等待人脸进入";
+}
+
+static const char *vision_expression_text(const workbuddy_vision_snapshot_t *snapshot)
+{
+    if (!snapshot->face_detected) {
+        return "等待识别";
+    }
+    switch (snapshot->expression) {
+    case WORKBUDDY_VISION_EXPRESSION_HAPPY:
+        return "开心";
+    case WORKBUDDY_VISION_EXPRESSION_SAD:
+        return "低落";
+    case WORKBUDDY_VISION_EXPRESSION_NEUTRAL:
+        return "平静";
+    case WORKBUDDY_VISION_EXPRESSION_UNKNOWN:
+    default:
+        return "分析中";
+    }
+}
+
+static const char *vision_backend_text(workbuddy_vision_backend_t backend)
+{
+    return backend == WORKBUDDY_VISION_BACKEND_ESP_WHO ?
+        "人脸模型  ESP-WHO" : "人脸检测  轻量后备";
+}
+
+static uint32_t vision_expression_accent(const workbuddy_vision_snapshot_t *snapshot)
+{
+    switch (snapshot->expression) {
+    case WORKBUDDY_VISION_EXPRESSION_HAPPY:
+        return 0x20a56b;
+    case WORKBUDDY_VISION_EXPRESSION_SAD:
+        return 0x6f6bd9;
+    case WORKBUDDY_VISION_EXPRESSION_NEUTRAL:
+        return 0x1c98d2;
+    default:
+        return 0x71889a;
+    }
+}
+
+static bool lvgl_show_emotion_page(void)
+{
+    workbuddy_vision_snapshot_t snapshot;
+    workbuddy_vision_get_snapshot(&snapshot);
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
+        return false;
+    }
+
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lvgl_set_vertical_gradient(scr, 0xe9fbf8, 0xd5f3ff);
+    lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0x19afd8, 0);
+    lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 88, 0x8fe2f5, 0), LV_OPA_40, 0);
+    lvgl_label(scr, "返回", 32, 28, &workbuddy_cn_20, 0xffffff);
+    lvgl_label(scr, "情绪识别", 110, 24, &workbuddy_cn_28, 0xffffff);
+
+    lv_obj_t *vision_card = lvgl_glass_card(scr, 78, 132, 410, 340, 28);
+    lvgl_label(vision_card, "边缘视觉", 38, 30, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(vision_card, "摄像头状态", 40, 82, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *camera_pill = lvgl_card(vision_card, 40, 116, 328, 50,
+                                      snapshot.camera_ready ? 0xe2f8ee : 0xfff4dc, 24);
+    lv_obj_set_style_border_width(camera_pill, 2, 0);
+    lv_obj_set_style_border_color(camera_pill,
+                                  lv_color_hex(snapshot.camera_ready ? 0x20a56b : 0xd98b16), 0);
+    lvgl_label(camera_pill, vision_face_text(&snapshot), 24, 13, &workbuddy_cn_20,
+               snapshot.camera_ready ? 0x16744c : 0xa26408);
+
+    lvgl_label(vision_card, "本地推理链路", 40, 194, &workbuddy_cn_20, 0x577489);
+    lvgl_label(vision_card, vision_backend_text(snapshot.backend), 40, 226,
+               &workbuddy_cn_20, 0x10283e);
+    lvgl_label(vision_card, "表情判定  本地轻量", 40, 260, &workbuddy_cn_20, 0x10283e);
+    lv_obj_t *edge_note = lvgl_label(vision_card, "图像数据只在设备端处理", 40, 298,
+                                     &workbuddy_cn_20, 0x577489);
+    lvgl_label_width(edge_note, 328);
+
+    lv_obj_t *emotion_card = lvgl_glass_card(scr, 516, 132, 430, 340, 28);
+    lvgl_label(emotion_card, "当前情绪", 40, 30, &workbuddy_cn_28, 0x10283e);
+    uint32_t accent = vision_expression_accent(&snapshot);
+    lv_obj_t *face = lvgl_card(emotion_card, 40, 92, 118, 118, 0xffdd68, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_shadow_width(face, 12, 0);
+    lv_obj_set_style_shadow_opa(face, LV_OPA_20, 0);
+    lvgl_card(face, 28, 36, 11, 11, 0x16324f, LV_RADIUS_CIRCLE);
+    lvgl_card(face, 79, 36, 11, 11, 0x16324f, LV_RADIUS_CIRCLE);
+    lvgl_card(face, 38, 76, 42, 7, 0x16324f, 4);
+
+    lv_obj_t *expression = lvgl_label(emotion_card, vision_expression_text(&snapshot), 190, 106,
+                                      &workbuddy_cn_28, accent);
+    lvgl_label_width(expression, 190);
+    char confidence_text[40];
+    snprintf(confidence_text, sizeof(confidence_text), "置信度  %u%%", snapshot.confidence);
+    lvgl_label(emotion_card, confidence_text, 190, 154, &workbuddy_cn_20, 0x577489);
+    char inference_text[48];
+    snprintf(inference_text, sizeof(inference_text), "本地延迟  %lums",
+             (unsigned long)snapshot.inference_ms);
+    lvgl_label(emotion_card, inference_text, 190, 188, &workbuddy_cn_20, 0x577489);
+
+    lv_obj_t *result_pill = lvgl_card(emotion_card, 40, 246, 350, 50, 0xe8f8ff, 25);
+    lv_obj_set_style_border_width(result_pill, 2, 0);
+    lv_obj_set_style_border_color(result_pill, lv_color_hex(accent), 0);
+    lvgl_center_label(result_pill,
+                      snapshot.face_detected ? "本地识别结果已更新" : "等待摄像头识别人脸",
+                      0, 13, 350, &workbuddy_cn_20, accent);
 
     lvgl_port_unlock();
     return true;
@@ -1737,6 +1870,9 @@ static void touch_task(void *arg)
                     if (event.screen == WORKBUDDY_SCREEN_PET) {
                         ESP_LOGI(TAG, "touch x=%u y=%u -> pet ai page", x[0], y[0]);
                         lvgl_show_pet_ai_page();
+                    } else if (event.screen == WORKBUDDY_SCREEN_EMOTION) {
+                        ESP_LOGI(TAG, "touch x=%u y=%u -> emotion page", x[0], y[0]);
+                        lvgl_show_emotion_page();
                     } else {
                         ESP_LOGI(TAG, "touch x=%u y=%u -> suggestion page", x[0], y[0]);
                         lvgl_show_suggestion_page();
@@ -1825,4 +1961,44 @@ void workbuddy_screen_update_ai_context(workbuddy_face_state_t face, workbuddy_e
     (void)face;
     s_emotion_state = emotion;
     update_pet_from_ai_context();
+}
+
+void workbuddy_screen_update_vision_context(const workbuddy_vision_snapshot_t *snapshot)
+{
+    if (!snapshot) {
+        return;
+    }
+
+    bool visual_changed = !s_vision_snapshot_valid ||
+        snapshot->camera_ready != s_vision_snapshot.camera_ready ||
+        snapshot->face_detected != s_vision_snapshot.face_detected ||
+        snapshot->expression != s_vision_snapshot.expression ||
+        snapshot->backend != s_vision_snapshot.backend;
+    s_vision_snapshot = *snapshot;
+    s_vision_snapshot_valid = true;
+
+    workbuddy_face_state_t face = snapshot->face_detected ?
+        WORKBUDDY_FACE_DETECTED : WORKBUDDY_FACE_NOT_DETECTED;
+    workbuddy_emotion_state_t emotion = WORKBUDDY_EMOTION_UNKNOWN;
+    switch (snapshot->expression) {
+    case WORKBUDDY_VISION_EXPRESSION_HAPPY:
+        emotion = WORKBUDDY_EMOTION_HAPPY;
+        break;
+    case WORKBUDDY_VISION_EXPRESSION_SAD:
+        emotion = WORKBUDDY_EMOTION_TIRED;
+        break;
+    case WORKBUDDY_VISION_EXPRESSION_NEUTRAL:
+        emotion = WORKBUDDY_EMOTION_NEUTRAL;
+        break;
+    case WORKBUDDY_VISION_EXPRESSION_UNKNOWN:
+    default:
+        break;
+    }
+    workbuddy_screen_update_ai_context(face, emotion);
+
+    if (workbuddy_launcher_current_screen() == WORKBUDDY_SCREEN_EMOTION &&
+        (visual_changed || snapshot->updated_at_ms - s_last_vision_page_refresh_ms >= 2000)) {
+        s_last_vision_page_refresh_ms = snapshot->updated_at_ms;
+        lvgl_show_emotion_page();
+    }
 }

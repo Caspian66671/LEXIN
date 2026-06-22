@@ -19,6 +19,7 @@ ESP32-P4 本地完成 AI 推理，DeepSeek 不是主决策链路。
 - 天气助手：显示西安天气、温度、降雨概率和出行提醒。
 - 日程提醒：显示北京时间、日期、农历和节假日。
 - 边缘 AI 研伴：ESP32-P4 本地运行 `main/models/workbuddy_advisor.espdl`，根据天气和日历输出本地推理结果。
+- 边缘视觉：SC2336 摄像头采集画面，ESP-WHO 在 ESP32-P4 本地完成人脸检测，情绪页面显示人脸、表情、置信度和推理耗时。
 - DeepSeek 建议：联网时由电脑端代理返回云端建议，屏幕左侧显示最终建议，右侧同时展示本地推理和 DeepSeek 建议。
 - UI：LVGL 触摸界面，中文字体由 `tools/generate_workbuddy_fonts.js` 自动从屏幕源码提取生成。
 
@@ -30,7 +31,7 @@ ESP32-P4 本地完成 AI 推理，DeepSeek 不是主决策链路。
 main/models/workbuddy_advisor.espdl
 ```
 
-这是通过 ESP-PPQ 导出的 ESP-DL INT8 量化模型，输入 8 个特征：
+这是通过 ESP-PPQ 导出的 ESP-DL INT8 量化模型，输入 21 个特征：
 
 - 当前小时
 - 是否工作日/节假日
@@ -40,6 +41,10 @@ main/models/workbuddy_advisor.espdl
 - 是否晴天
 - 是否多云
 - 是否节假日
+- 研伴、天气和日历的触摸次数
+- 距离上次交互的空闲时间
+- 当前专注时间和休息时间
+- 早晨、上午、午间、下午、晚餐、晚间和深夜时间窗
 
 输出建议类别包括：
 
@@ -48,7 +53,7 @@ BREAKFAST / LUNCH / DINNER / RESEARCH_FOCUS / PAPER_READING
 WRITE_THESIS / EXERCISE / REST / SLEEP / UMBRELLA / HYDRATE / PLAN
 ```
 
-后续摄像头情绪识别完成后，可以继续把 `happy/tired/focused/neutral` 等情绪结果加入 `workbuddy_edge_advisor.cpp` 的特征向量。
+摄像头结果已经通过独立的 `workbuddy_vision` 组件接入 UI。当前人脸检测使用真实 ESP-WHO 模型；表情分类仍是本地轻量判定，仓库不会将其描述成已训练完成的表情模型。后续加入正式 `expression.espdl` 后，可以继续把情绪结果扩展进 `workbuddy_edge_advisor.cpp` 的特征向量。
 
 ## 重新导出模型
 
@@ -108,13 +113,13 @@ idf.py -p COM3 flash
 ```
 
 本次 ESP-DL 接入已用 ESP-IDF v5.5.4 构建通过。
-项目分区表把 factory app 分区扩到 8M，用来给后续摄像头识别和情绪模块预留空间。
+项目分区表把 factory app 分区扩到 8M。融合 ESP-WHO、人脸模型和情绪页面后，当前固件仍有约 59% app 分区空间可供后续扩展。
 
 ## 新电脑从零运行
 
 ```powershell
-git clone https://gitee.com/h616444/revised-edition.git
-cd revised-edition
+git clone https://github.com/hcc666616/-.git workbuddy-edge-ai
+cd workbuddy-edge-ai
 ```
 
 然后双击：
@@ -130,12 +135,17 @@ start_demo.bat
 build_firmware.bat
 ```
 
+公开仓库不包含 Wi-Fi 密码。首次烧录前运行 `idf.py menuconfig`，在
+`WorkBuddy Configuration` 中填写本机 Wi-Fi；生成的 `sdkconfig` 已被
+`.gitignore` 忽略，不会上传。
+
 ## 项目文件
 
 - `main/workbuddy_main.c`：主入口、WiFi、代理请求、本地 advisor 调用。
 - `main/workbuddy_edge_advisor.cpp`：ESP-DL 本地模型加载、输入量化、推理和建议输出。
 - `main/models/workbuddy_advisor.espdl`：ESP-DL 量化模型。
 - `main/workbuddy_display_test.c`：LVGL UI。
+- `components/workbuddy_vision/`：来自 `Jnassh/LeXin` 的摄像头、ESP-WHO 人脸检测和轻量表情管线适配组件。
 - `tools/workbuddy_proxy.js`：电脑端天气/日历/DeepSeek 代理。
 - `tools/export_workbuddy_advisor_espdl.py`：训练并导出 ESP-DL advisor 模型。
 - `export_advisor_model.bat`：独立虚拟环境导出模型。
@@ -144,4 +154,4 @@ build_firmware.bat
 
 可以这样介绍：
 
-“我们的桌宠在 ESP32-P4 本地运行 ESP-DL 量化模型，根据天气、日历、节假日和时间段做即时建议。云端 DeepSeek 只作为联网增强能力，断网时仍能在边缘端完成 AI 决策。后续摄像头情绪识别会作为新增输入接入同一个本地模型。”
+“我们的桌宠在 ESP32-P4 本地同时运行 ESP-DL 建议模型和 ESP-WHO 人脸模型，根据天气、日历、触摸交互及视觉状态提供陪伴。云端 DeepSeek 只作为联网增强，断网时仍能完成人脸检测和本地建议。情绪页面会明确展示模型来源、置信度和板端推理耗时。”

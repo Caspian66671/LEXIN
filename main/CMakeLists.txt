@@ -21,7 +21,8 @@ set(workbuddy_priv_requires
     esp_lvgl_port
     lvgl
     lwip
-    nvs_flash)
+    nvs_flash
+    workbuddy_vision)
 
 set(workbuddy_advisor_model "${CMAKE_CURRENT_LIST_DIR}/models/workbuddy_advisor.espdl")
 set(workbuddy_has_espdl_model 0)
