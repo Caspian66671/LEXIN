@@ -1,12 +1,12 @@
-# WorkBuddy Vision Component
+# LeXin Vision Component
 
 This component ports the camera, ESP-WHO face detector, and lightweight
 expression pipeline from `Jnassh/LeXin` commit
 `723310f745c20e28e62515809bc738b7e0eefcb9`.
 
-The WorkBuddy application keeps ownership of LCD, touch, LVGL, networking, and
+The LeXin application keeps ownership of LCD, touch, LVGL, networking, and
 assistant behavior. This component owns only camera capture and local vision
-inference, and publishes a small snapshot through `workbuddy_vision.h`.
+inference, and publishes a small snapshot through `lexin_vision.h`.
 
 Current capability:
 

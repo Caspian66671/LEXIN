@@ -1,4 +1,5 @@
 const http = require("http");
+const dgram = require("dgram");
 
 function portFromArgs() {
   const index = process.argv.indexOf("--port");
@@ -9,6 +10,7 @@ function portFromArgs() {
 }
 
 const PORT = Number(process.env.PORT || portFromArgs() || 8787);
+const DISCOVERY_PORT = PORT + 1;
 const XIAN_LAT = 34.3416;
 const XIAN_LON = 108.9398;
 const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
@@ -531,7 +533,21 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`WorkBuddy DeepSeek pet proxy listening on http://0.0.0.0:${PORT}`);
+  console.log(`LeXin DeepSeek pet proxy listening on http://0.0.0.0:${PORT}`);
   console.log("Endpoints: /weather /time /edge-context /insight /health");
   console.log(DEEPSEEK_API_KEY ? `DeepSeek enabled: ${DEEPSEEK_MODEL}` : "DeepSeek not configured, using local pet fallback.");
+});
+
+const discovery = dgram.createSocket("udp4");
+discovery.on("message", (message, remote) => {
+  if (message.toString("utf8").trim() !== "LEXIN_DISCOVER_V1") return;
+  const response = Buffer.from("LEXIN_PROXY_V1", "utf8");
+  discovery.send(response, remote.port, remote.address);
+});
+discovery.on("error", (error) => {
+  console.error(`LeXin UDP discovery disabled: ${error.message}`);
+  discovery.close();
+});
+discovery.bind(DISCOVERY_PORT, "0.0.0.0", () => {
+  console.log(`LeXin discovery listening on UDP ${DISCOVERY_PORT}`);
 });

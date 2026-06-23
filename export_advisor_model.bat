@@ -20,11 +20,11 @@ if errorlevel 1 goto :fail
 if errorlevel 1 goto :fail
 ".advisor_venv\Scripts\python.exe" -m pip install esp-ppq
 if errorlevel 1 goto :fail
-".advisor_venv\Scripts\python.exe" tools\export_workbuddy_advisor_espdl.py
+".advisor_venv\Scripts\python.exe" tools\export_lexin_advisor_espdl.py
 if errorlevel 1 goto :fail
 
 echo.
-echo ESP-DL advisor model exported to main\models\workbuddy_advisor.espdl
+echo ESP-DL advisor model exported to main\models\lexin_advisor.espdl
 pause
 exit /b 0
 

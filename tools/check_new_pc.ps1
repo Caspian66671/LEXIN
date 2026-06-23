@@ -24,7 +24,7 @@ function Write-Check {
     }
 }
 
-Write-Host "WorkBuddy new PC check"
+Write-Host "LeXin new PC check"
 Write-Host "Project: $Root"
 Write-Host ""
 
@@ -52,12 +52,13 @@ $files = @(
     "main\idf_component.yml",
     "sdkconfig.defaults",
     "partitions.csv",
-    "tools\workbuddy_proxy.js",
+    "tools\lexin_proxy.js",
     "start_demo.bat",
     "set_deepseek_key.bat",
     "deepseek_config.example.ps1",
     "build_firmware.bat",
-    "tools\start_workbuddy_proxy.ps1"
+    "flash_firmware.bat",
+    "tools\start_lexin_proxy.ps1"
 )
 
 foreach ($file in $files) {
@@ -67,18 +68,18 @@ foreach ($file in $files) {
 if ($nodeReady) {
     Write-Host ""
     Write-Host "Checking proxy scripts..."
-    node --check tools\workbuddy_proxy.js
+    node --check tools\lexin_proxy.js
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "[OK]   tools\workbuddy_proxy.js syntax"
+        Write-Host "[OK]   tools\lexin_proxy.js syntax"
     } else {
-        Write-Host "[MISS] tools\workbuddy_proxy.js syntax"
+        Write-Host "[MISS] tools\lexin_proxy.js syntax"
     }
 
-    node --check tools\generate_workbuddy_fonts.js
+    node --check tools\generate_lexin_fonts.js
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "[OK]   tools\generate_workbuddy_fonts.js syntax"
+        Write-Host "[OK]   tools\generate_lexin_fonts.js syntax"
     } else {
-        Write-Host "[MISS] tools\generate_workbuddy_fonts.js syntax"
+        Write-Host "[MISS] tools\generate_lexin_fonts.js syntax"
     }
 }
 
@@ -87,4 +88,5 @@ Write-Host "Next steps:"
 Write-Host "1. Connect the PC to the demo WiFi configured in sdkconfig.defaults."
 Write-Host "2. Double-click start_demo.bat and approve the one-time firewall prompt."
 Write-Host "3. Run build_firmware.bat from an ESP-IDF terminal to build firmware."
+Write-Host "4. Run flash_firmware.bat to auto-detect and flash the connected board."
 Write-Host "The board discovers the new PC automatically; no proxy IP editing is needed."

@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 20 px
  * Bpp: 4
- * Opts: --font C:\Windows\Fonts\simhei.ttf --size 20 --bpp 4 --no-compress --format lvgl --lv-include lvgl.h --lv-font-name workbuddy_cn_20 --range 0x20-0x7E --symbols 待机中学习前先喝水天气和日程更新已准备好等推理维置信度未接入云端模型状态晴多阴雪雨雷雾知降较高记得带伞阳光强注意防晒温偏低保暖网络异常稍后再试不错适合出门陪伴积极运行良专一小时疲惫风险提醒休息五分钟继续进重点平稳体感热舒少补短室内月二三四六七八九十无早睡活动身吃饭散步轻松读论文放复盘明计划养夜深了餐做笔到别硬扛下午晚关心概率可能建议炎冷开定间节假期类奏北京健康阅路上慢组篇核整要今完成段任务把拆确认线战按有变通勤留余量效抓方法结资料安排给大脑换伸展会回来暂停几最的件事清楚始看自己耗空拖当化照顾触摸交互历工作硕士研双本地离延迟判请连贴查询正在求同思考初廿冬腊劳国庆元旦情绪桌宠助手伙服次洞察边缘视觉返果析依据说对比价值输格识落静生切反馈断润色加载西参周农误检，。；：、（）【】《》！？“”‘’维轮触摸交互专注计时本地输入云端润色桌宠反馈研伴节奏 -o main\workbuddy_cn_20.c
+ * Opts: --font C:\Windows\Fonts\simhei.ttf --size 20 --bpp 4 --no-compress --format lvgl --lv-include lvgl.h --lv-font-name lexin_cn_20 --range 0x20-0x7E --symbols 待机中学习前先喝水天气和日程更新已准备好等推理维置信度未接入云端模型状态晴多阴雪雨雷雾知降较高记得带伞阳光强注意防晒温偏低保暖网络异常稍后再试不错适合出门陪伴积极运行良专一小时疲惫风险提醒休息五分钟继续进重点平稳体感热舒少补短室内月二三四六七八九十无早睡活动身吃饭散步轻松读论文放复盘明计划养夜深了餐做笔到别硬扛下午晚关心概率可能建议炎冷开定间节假期类奏北京健康阅路上慢组篇核整要今完成段任务把拆确认线战按有变通勤留余量效抓方法结资料安排给大脑换伸展会回来暂停几最的件事清楚始看自己耗空拖当化照顾触摸交互历工作硕士研双本地离延迟判请连贴查询正在求同思考初廿冬腊劳国庆元旦情绪桌宠助手伙服次洞察边缘视觉返果析依据说对比价值输格识落静生切反馈断润色加载西参周农误检，。；：、（）【】《》！？“”‘’维轮触摸交互专注计时本地输入云端润色桌宠反馈研伴节奏 -o main\lexin_cn_20.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
@@ -10,11 +10,11 @@
 #include "lvgl.h"
 #endif
 
-#ifndef WORKBUDDY_CN_20
-#define WORKBUDDY_CN_20 1
+#ifndef LEXIN_CN_20
+#define LEXIN_CN_20 1
 #endif
 
-#if WORKBUDDY_CN_20
+#if LEXIN_CN_20
 
 /*-----------------
  *    BITMAPS
@@ -9797,9 +9797,9 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
 
 /*Initialize a public general font descriptor*/
 #if LVGL_VERSION_MAJOR >= 8
-const lv_font_t workbuddy_cn_20 = {
+const lv_font_t lexin_cn_20 = {
 #else
-lv_font_t workbuddy_cn_20 = {
+lv_font_t lexin_cn_20 = {
 #endif
     .get_glyph_dsc = lv_font_get_glyph_dsc_fmt_txt,    /*Function pointer to get glyph's data*/
     .get_glyph_bitmap = lv_font_get_bitmap_fmt_txt,    /*Function pointer to get glyph's bitmap*/
@@ -9821,5 +9821,5 @@ lv_font_t workbuddy_cn_20 = {
 
 
 
-#endif /*#if WORKBUDDY_CN_20*/
+#endif /*#if LEXIN_CN_20*/
 

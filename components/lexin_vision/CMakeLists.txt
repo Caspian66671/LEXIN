@@ -1,5 +1,5 @@
 set(vision_sources
-    "workbuddy_vision.c"
+    "lexin_vision.c"
     "port/camera_port.c"
     "port/vision_input.c"
     "port/vision_model.c"

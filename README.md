@@ -1,165 +1,213 @@
-# WorkBuddy ESP32-P4 边缘 AI 桌宠
+# 乐鑫 LeXin ESP32-P4 边缘 AI 桌宠
 
-这是一个面向“嵌入式边缘 AI 应用”赛题的 ESP32-P4 触摸屏桌宠项目。项目重点不是单纯云端问答，而是在 ESP32-P4 端使用 ESP-DL 量化模型完成本地推理，根据天气、时间、日历/节假日等上下文给出硕士日常建议。
+乐鑫是一套运行在 ESP32-P4 Function EV Board 上的触摸式边缘 AI 桌宠。天气、日历、研伴建议和情绪识别共用同一套固件与 UI；ESP-DL 建议模型和 ESP-WHO 人脸检测均在开发板本地运行，DeepSeek 仅作为联网增强能力。
 
-当前链路：
+## 项目亮点
 
-```text
-触摸屏 -> ESP32-P4 -> 获取天气/日历上下文 -> ESP-DL 本地量化模型 -> LCD 当前建议
-```
+- **本地建议模型**：`main/models/lexin_advisor.espdl` 在 ESP32-P4 上完成 INT8 推理。
+- **本地视觉模型**：SC2336 摄像头输入由 ESP-WHO 在板端进行人脸检测和跟踪。
+- **实时人机交互**：触摸次数、空闲时长、专注计时、天气和日期共同参与建议推理。
+- **断网仍可展示**：摄像头、人脸框、情绪状态、本地建议和触摸 UI 不依赖云端。
+- **云端增强可选**：电脑代理负责天气、时间和 DeepSeek，未配置 API Key 时不影响本地模型。
 
-DeepSeek 仍可作为电脑端云端增强能力保留，但比赛展示时核心应强调：
-
-```text
-ESP32-P4 本地完成 AI 推理，DeepSeek 不是主决策链路。
-```
-
-## 当前功能
-
-- 天气助手：显示西安天气、温度、降雨概率和出行提醒。
-- 日程提醒：显示北京时间、日期、农历和节假日。
-- 边缘 AI 研伴：ESP32-P4 本地运行 `main/models/workbuddy_advisor.espdl`，根据天气和日历输出本地推理结果。
-- 边缘视觉：SC2336 摄像头采集画面，ESP-WHO 在 ESP32-P4 本地完成人脸检测，情绪页面显示人脸、表情、置信度和推理耗时。
-- DeepSeek 建议：联网时由电脑端代理返回云端建议，屏幕左侧显示最终建议，右侧同时展示本地推理和 DeepSeek 建议。
-- UI：LVGL 触摸界面，中文字体由 `tools/generate_workbuddy_fonts.js` 自动从屏幕源码提取生成。
-
-## 本地 AI 模型
-
-模型文件：
+核心链路：
 
 ```text
-main/models/workbuddy_advisor.espdl
+SC2336 摄像头 -> ESP-WHO -> 人脸框与情绪状态 ----+
+天气 / 日期 / 触摸 / 专注数据 -> ESP-DL 建议模型 ----+-> LVGL 触摸界面
+电脑代理 -> 天气 / 时间 / DeepSeek 联网增强 --------+
 ```
 
-这是通过 ESP-PPQ 导出的 ESP-DL INT8 量化模型，输入 21 个特征：
+## 四个展示入口
 
-- 当前小时
-- 是否工作日/节假日
-- 降雨风险
-- 是否炎热
-- 是否寒冷
-- 是否晴天
-- 是否多云
-- 是否节假日
-- 研伴、天气和日历的触摸次数
-- 距离上次交互的空闲时间
-- 当前专注时间和休息时间
-- 早晨、上午、午间、下午、晚餐、晚间和深夜时间窗
+主屏提供四个独立入口：
 
-输出建议类别包括：
+1. **天气提醒**：温度、天气、降雨概率和生活提示。
+2. **日程提醒**：北京时间、月历、农历、日期类型和今日安排。
+3. **情绪研伴**：实时摄像头、人脸跟踪框、表情、置信度、推理延迟和桌宠响应。
+4. **研伴建议**：左侧为 ESP-DL 本地建议，右侧为 DeepSeek 独立建议，二者使用同一上下文但分别显示。
 
-```text
-BREAKFAST / LUNCH / DINNER / RESEARCH_FOCUS / PAPER_READING
-WRITE_THESIS / EXERCISE / REST / SLEEP / UMBRELLA / HYDRATE / PLAN
-```
+## 硬件与软件
 
-摄像头结果已经通过独立的 `workbuddy_vision` 组件接入 UI。当前人脸检测使用真实 ESP-WHO 模型；表情分类仍是本地轻量判定，仓库不会将其描述成已训练完成的表情模型。后续加入正式 `expression.espdl` 后，可以继续把情绪结果扩展进 `workbuddy_edge_advisor.cpp` 的特征向量。
+硬件：
 
-## 重新导出模型
+- ESP32-P4 Function EV Board
+- 配套 1024 x 600 触摸屏
+- SC2336 MIPI-CSI 摄像头
+- ESP32-C6 无线子板
+- 两根数据线：开发板供电/调试与无线子板连接
 
-不要在 ESP-IDF 自带 Python 环境里安装 ESP-PPQ，容易和 ESP-IDF 依赖冲突。直接运行：
+新电脑需要：
 
-```text
-export_advisor_model.bat
-```
+- Windows 10/11
+- VS Code 与 Espressif IDF 扩展，或 ESP-IDF 5.5.x 命令行环境
+- Git
+- Node.js 18 或更新版本
+- 电脑连接项目预设的演示 Wi-Fi
 
-脚本会创建独立 `.advisor_venv`，安装 PyTorch CPU 版和 ESP-PPQ，然后重新生成：
+本仓库默认目标已固定为 `esp32p4`，首次下载后不需要手动修改 CMake 目标。演示 Wi-Fi 已写入 `sdkconfig.defaults`；更换网络时只修改该文件中的 `CONFIG_LEXIN_WIFI_SSID` 和 `CONFIG_LEXIN_WIFI_PASSWORD`，然后重新构建烧录。
 
-```text
-main/models/workbuddy_advisor.espdl
-main/models/workbuddy_advisor.info
-main/models/workbuddy_advisor.json
-main/models/workbuddy_advisor.onnx
-```
+## 新电脑首次运行
 
-仓库只提交 `.espdl`，其它导出中间产物会被 `.gitignore` 忽略。
-
-## 启动电脑代理
-
-电脑和开发板需要在同一 WiFi。双击：
-
-```text
-start_demo.bat
-```
-
-代理提供：
-
-```text
-/health
-/weather
-/time
-/edge-context
-/insight
-```
-
-ESP32-P4 的 AI 按钮现在请求 `/edge-context`，只取天气/日历原始上下文，然后在板端本地推理。`/insight` 仍保留给 DeepSeek 云端增强演示。
-
-首次接入 DeepSeek 时双击：
-
-```text
-set_deepseek_key.bat
-```
-
-只需要粘贴 API Key。脚本会固定使用 `deepseek-chat`，保存本地配置并自动启动代理；窗口看到 `DeepSeek enabled: deepseek-chat` 才表示接入成功。
-
-## 构建和烧录
-
-推荐 VSCode ESP-IDF 插件，也可以命令行：
+### 1. 下载项目
 
 ```powershell
-idf.py set-target esp32p4
-idf.py build
-idf.py -p COM3 flash
+git clone https://github.com/Caspian66671/-.git LeXin
+cd LeXin
 ```
 
-本次 ESP-DL 接入已用 ESP-IDF v5.5.4 构建通过。
-项目分区表把 factory app 分区扩到 8M。融合 ESP-DL 研伴模型、ESP-WHO 人脸模型和情绪页面后，当前固件大小约 4.13 MiB，仍有约 48% app 分区空间可供后续扩展。
+如果通过网页下载 ZIP，请解压后直接打开包含根目录 `CMakeLists.txt` 的 `LeXin-main` 文件夹，不要只打开 `main` 子目录。
 
-当前合并版本已在 ESP32-P4 实板同时验证：
+### 2. 检查环境
 
-- LVGL 屏幕和 GT911 触摸正常启动。
-- `workbuddy_advisor.espdl` 加载并完成板端热身推理。
-- SC2336 被识别，MIPI-CSI 连续采集约 8 FPS。
-- ESP-WHO 使用 96x96 RGB888 输入持续处理摄像头帧。
-- 触摸与摄像头共用开发板 BSP I2C 总线，避免重复创建总线导致黑屏或相机启动失败。
-
-## 新电脑从零运行
-
-```powershell
-git clone https://github.com/hcc666616/-.git workbuddy-edge-ai
-cd workbuddy-edge-ai
-```
-
-然后双击：
+双击：
 
 ```text
 new_pc_check.bat
+```
+
+脚本会检查 Git、Node.js、ESP-IDF 和项目必要文件。ESP-IDF 显示未就绪时，在 VS Code 中执行 `ESP-IDF: Open ESP-IDF Terminal`，再运行构建脚本。
+
+### 3. 启动电脑代理
+
+先让电脑连接与开发板相同的演示 Wi-Fi，然后双击：
+
+```text
 start_demo.bat
 ```
 
-构建固件：
+首次运行会申请一次 Windows 防火墙权限，以允许开发板访问本机 `8787` 端口。脚本会自动获取新电脑的局域网地址；开发板会自动发现代理，不需要手动填写电脑 IP。
+
+窗口出现以下内容即可：
+
+```text
+Proxy OK.
+Weather:
+Time:
+AI pet insight:
+```
+
+### 4. 构建固件
+
+在 ESP-IDF 终端中双击或运行：
 
 ```text
 build_firmware.bat
 ```
 
-当前私有比赛仓库已在 `sdkconfig.defaults` 中写入演示 Wi-Fi，下载后可直接构建烧录。
-新电脑只需连接同一 Wi-Fi 并双击 `start_demo.bat`；脚本会启动代理、申请一次防火墙
-放行，开发板会自动发现新电脑地址，不需要手动修改代理 IP。
+等价命令为：
 
-## 项目文件
+```powershell
+idf.py set-target esp32p4
+idf.py build
+```
 
-- `main/workbuddy_main.c`：主入口、WiFi、代理请求、本地 advisor 调用。
-- `main/workbuddy_edge_advisor.cpp`：ESP-DL 本地模型加载、输入量化、推理和建议输出。
-- `main/models/workbuddy_advisor.espdl`：ESP-DL 量化模型。
-- `main/workbuddy_display_test.c`：LVGL UI。
-- `components/workbuddy_vision/`：来自 `Jnassh/LeXin` 的摄像头、ESP-WHO 人脸检测和轻量表情管线适配组件。
-- `tools/workbuddy_proxy.js`：电脑端天气/日历/DeepSeek 代理。
-- `tools/export_workbuddy_advisor_espdl.py`：训练并导出 ESP-DL advisor 模型。
-- `export_advisor_model.bat`：独立虚拟环境导出模型。
+### 5. 烧录
 
-## 比赛讲解建议
+连接开发板后双击：
 
-可以这样介绍：
+```text
+flash_firmware.bat
+```
 
-“我们的桌宠在 ESP32-P4 本地同时运行 ESP-DL 建议模型和 ESP-WHO 人脸模型，根据天气、日历、触摸交互及视觉状态提供陪伴。云端 DeepSeek 只作为联网增强，断网时仍能完成人脸检测和本地建议。情绪页面会明确展示模型来源、置信度和板端推理耗时。”
+脚本使用 ESP-IDF 自动选择可用串口，因此不把 COM3 写死。若电脑同时连接多个串口设备，可在 ESP-IDF 状态栏选择正确端口后执行：
+
+```powershell
+idf.py -p COMx flash monitor
+```
+
+烧录结束后按一次开发板复位键。屏幕应先显示乐鑫主界面，视觉服务随后在后台完成摄像头和模型初始化。
+
+## DeepSeek 配置
+
+DeepSeek 是可选增强，不是本地决策链路的必要条件。第一次配置时双击：
+
+```text
+set_deepseek_key.bat
+```
+
+粘贴 API Key 后，配置只保存在本机忽略文件 `deepseek_config.ps1`，不会提交到仓库。随后重新运行 `start_demo.bat`。窗口出现 `DeepSeek enabled: deepseek-chat` 表示连接成功。
+
+## 比赛现场展示顺序
+
+建议按以下顺序演示，整套流程约 90 秒：
+
+1. 上电后展示乐鑫主屏，说明四个功能属于同一固件。
+2. 打开**情绪研伴**，正对摄像头并缓慢左右移动，展示 ESP-WHO 人脸框跟随、`FACE: YES`、置信度和毫秒级延迟。
+3. 返回后打开**天气提醒**，展示实时天气和降雨概率。
+4. 打开**日程提醒**，展示月历、农历、工作日/节假日和今日安排。
+5. 打开**研伴建议**，说明左侧是 ESP32-P4 上的 ESP-DL 本地推理，右侧是 DeepSeek 联网增强。
+6. 断开代理或关闭电脑网络，再次进入情绪研伴和本地建议，证明边缘 AI 仍可运行。
+
+为了获得稳定的人脸框，摄像头与人脸建议保持 30 至 80 厘米距离，避免强逆光。检测框由真实 ESP-WHO 结果生成，不使用固定或模拟方框。
+
+## 模型说明
+
+### ESP-DL 研伴模型
+
+模型文件：
+
+```text
+main/models/lexin_advisor.espdl
+```
+
+模型输入包含天气、日期类型、小时段、触摸交互、空闲时长和专注计时等 21 维特征。输出类别包括吃饭、科研专注、论文阅读、论文写作、锻炼、休息、睡眠、带伞、补水和任务规划。
+
+重新训练和导出时运行：
+
+```text
+export_advisor_model.bat
+```
+
+脚本使用独立 `.advisor_venv`，不会污染 ESP-IDF Python 环境。仓库只提交烧录所需的 `.espdl`；`.onnx`、`.json` 和 `.info` 属于可再生成的中间产物。
+
+### ESP-WHO 人脸检测
+
+视觉子系统位于 `components/lexin_vision/`。摄像头画面在板端缩放为模型输入，ESP-WHO 输出真实人脸坐标，随后进行时间确认、框平滑和短时保持。ROI 质量检查只用于判断表情信息是否可靠，不会把已经成立的人脸框删除。
+
+## 目录说明
+
+```text
+main/lexin_main.c                 Wi-Fi、代理、任务队列与应用入口
+main/lexin_display_test.c         LVGL 主屏和四个功能页面
+main/lexin_edge_advisor.cpp       ESP-DL 本地建议模型
+main/lexin_interaction.c          触摸与专注计时数据
+main/models/lexin_advisor.espdl   本地量化模型
+components/lexin_vision/          摄像头、ESP-WHO、人脸跟踪与情绪状态
+components/human_face_detect/     与当前 ESP-DL 运行时匹配的人脸模型组件
+tools/lexin_proxy.js              天气、日期与 DeepSeek 电脑代理
+tools/start_lexin_proxy.ps1       自动发现网络并启动代理
+```
+
+后续功能应在上述边界内扩展：视觉输入放入 `components/lexin_vision/`，新页面放入 `main/lexin_display_test.c`，新的本地建议特征放入 `main/lexin_edge_advisor.cpp`。不要再引入第二套 `app_main`、LCD 初始化或摄像头初始化，否则会造成黑屏、I2C 冲突或相机重复占用。
+
+## 常见问题
+
+### 黑屏
+
+确认打开的是仓库根目录，并执行完整 `idf.py build` 后再烧录。不要把另一个项目的 `app_main`、BSP 初始化或旧 `sdkconfig` 单独覆盖进来。
+
+### 天气提示“检查网络后再试”
+
+确认电脑已连接演示 Wi-Fi，`start_demo.bat` 窗口显示 `Proxy OK.`，且首次防火墙授权已通过。可双击 `check_proxy.bat` 验证 `/weather` 和 `/time`。
+
+### 相机有画面但没有人脸框
+
+先确认摄像头无遮挡、光线均匀、人脸距离合适。串口日志应出现 `HumanFaceDetect model wrapper created` 和 `real vision backend active`。页面中的 `FACE: YES`、框坐标和置信度都来自本地模型。
+
+### 中文显示方框
+
+运行：
+
+```powershell
+node tools\generate_lexin_fonts.js
+idf.py build
+```
+
+字体脚本会从 UI 源码提取实际使用的中文字符并重新生成字体。
+
+## 安全与提交规则
+
+- 不提交 `deepseek_config.ps1`、API Key、日志、`build/`、`sdkconfig` 和模型中间产物。
+- `sdkconfig.defaults` 是新电脑构建基线；本机 `sdkconfig` 只是生成文件。
+- 合并新功能前至少执行一次完整构建，并分别打开天气、日历、情绪研伴和研伴建议页面。

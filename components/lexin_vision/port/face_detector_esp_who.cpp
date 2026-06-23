@@ -215,6 +215,10 @@ esp_err_t face_detector_esp_who_init(void)
             ESP_LOGE(TAG, "HumanFaceDetect model allocation failed");
             return ESP_ERR_NO_MEM;
         }
+        // Keep the detector sensitive enough for a tabletop demo while the
+        // temporal confirmation and geometry filters suppress one-frame hits.
+        s_model->set_score_thr(0.35f, 0);
+        s_model->set_score_thr(0.45f, 1);
         ESP_LOGI(TAG, "HumanFaceDetect model wrapper created");
     }
 
@@ -317,8 +321,10 @@ esp_err_t face_detector_esp_who_run(const vision_input_frame_t *input,
     expression_features_t roi = {};
     const bool geometry_detected = face->detected;
     const bool roi_ok = !geometry_detected || validate_face_roi(input, face, &roi);
-    face->detected = geometry_detected && roi_ok;
-    face->expression = face->detected ?
+    // A valid model box is a face detection. ROI statistics describe whether
+    // expression classification is trustworthy; they must not erase the box.
+    face->detected = geometry_detected;
+    face->expression = face->detected && roi_ok ?
         expression_adapter_classify_from_input(input, face, &roi) : ECHOMATE_EXPRESSION_UNKNOWN;
 
     if (!s_filter_logged) {
@@ -353,7 +359,7 @@ esp_err_t face_detector_esp_who_run(const vision_input_frame_t *input,
         s_roi_reject_count++;
         if (s_roi_reject_count <= 8U || (s_roi_reject_count % 32U) == 0U) {
             ESP_LOGI(TAG,
-                     "ESP-WHO ROI reject count=%" PRIu32 " score=%u area=%" PRIu32 "%% aspect_q8=%" PRIu32 " luma=%u contrast=%u spread=%u upper=%u lower=%u uc=%u lc=%u mouth_luma=%u mouth_contrast=%u",
+                     "ESP-WHO expression ROI reject count=%" PRIu32 " score=%u area=%" PRIu32 "%% aspect_q8=%" PRIu32 " luma=%u contrast=%u spread=%u upper=%u lower=%u uc=%u lc=%u mouth_luma=%u mouth_contrast=%u",
                      s_roi_reject_count,
                      face->confidence,
                      box_percent,

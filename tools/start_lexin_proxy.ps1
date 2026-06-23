@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$ProxyScript = Join-Path $Root "tools\workbuddy_proxy.js"
+$ProxyScript = Join-Path $Root "tools\lexin_proxy.js"
 $DeepSeekConfig = Join-Path $Root "deepseek_config.ps1"
 $LogSuffix = if ($Port -eq 8787) { "" } else { ".$Port" }
 $OutLog = Join-Path $Root "proxy$LogSuffix.out.log"
@@ -69,10 +69,14 @@ function Get-LanIPv4Addresses {
 }
 
 function Ensure-ProxyFirewallRule {
-    $RuleName = "WorkBuddy Demo Proxy TCP $Port"
+    $TcpRuleName = "LeXin Demo Proxy TCP $Port"
+    $UdpPort = $Port + 1
+    $UdpRuleName = "LeXin Demo Discovery UDP $UdpPort"
     try {
-        $Rule = Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue
-        if ($null -ne $Rule -and $Rule.Enabled -eq "True") {
+        $TcpRule = Get-NetFirewallRule -DisplayName $TcpRuleName -ErrorAction SilentlyContinue
+        $UdpRule = Get-NetFirewallRule -DisplayName $UdpRuleName -ErrorAction SilentlyContinue
+        if ($null -ne $TcpRule -and $TcpRule.Enabled -eq "True" -and
+            $null -ne $UdpRule -and $UdpRule.Enabled -eq "True") {
             return $true
         }
     } catch {
@@ -81,7 +85,7 @@ function Ensure-ProxyFirewallRule {
     }
 
     Write-Host "First run: requesting Windows permission for ESP32-P4 local access..."
-    $Command = "New-NetFirewallRule -DisplayName '$RuleName' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any -RemoteAddress LocalSubnet | Out-Null"
+    $Command = "if (-not (Get-NetFirewallRule -DisplayName '$TcpRuleName' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName '$TcpRuleName' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any -RemoteAddress LocalSubnet | Out-Null }; if (-not (Get-NetFirewallRule -DisplayName '$UdpRuleName' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName '$UdpRuleName' -Direction Inbound -Action Allow -Protocol UDP -LocalPort $UdpPort -Profile Any -RemoteAddress LocalSubnet | Out-Null }"
     try {
         $Process = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru `
             -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $Command)
@@ -111,13 +115,13 @@ function Test-EnterpriseProxy {
     }
 }
 
-function Stop-WorkBuddyProxy {
+function Stop-LeXinProxy {
     $stopped = $false
     $procs = Get-CimInstance Win32_Process |
-        Where-Object { $_.Name -like "node*" -and $_.CommandLine -like "*workbuddy_proxy.js*" }
+        Where-Object { $_.Name -like "node*" -and $_.CommandLine -like "*lexin_proxy.js*" }
     foreach ($proc in $procs) {
         Stop-Process -Id $proc.ProcessId -Force
-        Write-Host "Stopped old WorkBuddy proxy process PID $($proc.ProcessId)."
+        Write-Host "Stopped old LeXin proxy process PID $($proc.ProcessId)."
         $stopped = $true
     }
     return $stopped
@@ -138,12 +142,12 @@ if ($FirewallReady) {
 $NeedsStart = $true
 if (Test-Proxy) {
     if (Test-EnterpriseProxy) {
-        Write-Host "WorkBuddy DeepSeek pet proxy already running on port $Port."
+        Write-Host "LeXin DeepSeek pet proxy already running on port $Port."
         $NeedsStart = $false
     } else {
-        Write-Host "Old WorkBuddy proxy detected on port $Port. Restarting for DeepSeek pet insight..."
-        if (-not (Stop-WorkBuddyProxy)) {
-            Write-Host "No WorkBuddy node process was found to stop. Port $Port may be used by another program."
+        Write-Host "Old LeXin proxy detected on port $Port. Restarting for DeepSeek pet insight..."
+        if (-not (Stop-LeXinProxy)) {
+            Write-Host "No LeXin node process was found to stop. Port $Port may be used by another program."
         }
         for ($i = 0; $i -lt 10 -and (Test-Proxy); $i++) {
             Start-Sleep -Milliseconds 300
@@ -168,7 +172,7 @@ if ($NeedsStart) {
     $NodeArgs = "`"$ProxyScript`" --port $Port"
 
     $OutLog = Initialize-LogFile -Path $OutLog -Kind "out" -Value @(
-        "WorkBuddy proxy startup",
+        "LeXin proxy startup",
         "Root: $Root",
         "Node: $NodePath",
         "Node version: $NodeVersion",
@@ -177,7 +181,7 @@ if ($NeedsStart) {
     )
     $ErrLog = Initialize-LogFile -Path $ErrLog -Kind "err" -Value @("")
 
-    Write-Host "Starting WorkBuddy proxy on port $Port..."
+    Write-Host "Starting LeXin proxy on port $Port..."
     Write-Host "Node.js: $NodeVersion"
     Start-Process -WindowStyle Hidden `
         -FilePath $NodePath `

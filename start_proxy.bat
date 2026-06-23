@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Starting WorkBuddy quick proxy...
+echo Starting LeXin quick proxy...
 echo.
 where node >nul 2>nul
 if errorlevel 1 (
@@ -11,7 +11,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-node "%~dp0tools\workbuddy_proxy.js" --port 8787
+node "%~dp0tools\lexin_proxy.js" --port 8787
 echo.
 echo Proxy stopped. Press any key to close this window.
 pause >nul

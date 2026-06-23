@@ -1,4 +1,4 @@
-#include "workbuddy_vision.h"
+#include "lexin_vision.h"
 
 #include <string.h>
 
@@ -10,18 +10,18 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-static const char *TAG = "workbuddy_vision";
+static const char *TAG = "lexin_vision";
 
 #define VISION_TASK_STACK 8192
 #define VISION_TASK_PRIORITY 4
 #define VISION_START_DELAY_MS 2500
 #define VISION_FRAME_PERIOD_MS (1000 / 30)
 #define VISION_PREVIEW_PIXELS \
-    (WORKBUDDY_VISION_PREVIEW_WIDTH * WORKBUDDY_VISION_PREVIEW_HEIGHT)
+    (LEXIN_VISION_PREVIEW_WIDTH * LEXIN_VISION_PREVIEW_HEIGHT)
 
 static portMUX_TYPE s_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
-static workbuddy_vision_snapshot_t s_snapshot;
-static workbuddy_vision_callback_t s_callback;
+static lexin_vision_snapshot_t s_snapshot;
+static lexin_vision_callback_t s_callback;
 static void *s_callback_user_data;
 static bool s_started;
 static SemaphoreHandle_t s_preview_mutex;
@@ -32,8 +32,8 @@ static bool s_preview_valid;
 static void update_preview(const camera_frame_msg_t *frame)
 {
     if (!frame || !frame->buffer || frame->format != ECHOMATE_PIXEL_RGB565 ||
-        frame->width != WORKBUDDY_VISION_PREVIEW_WIDTH ||
-        frame->height != WORKBUDDY_VISION_PREVIEW_HEIGHT ||
+        frame->width != LEXIN_VISION_PREVIEW_WIDTH ||
+        frame->height != LEXIN_VISION_PREVIEW_HEIGHT ||
         frame->length < VISION_PREVIEW_PIXELS * sizeof(uint16_t) ||
         !s_preview_mutex || !s_preview_pixels) {
         return;
@@ -48,47 +48,47 @@ static void update_preview(const camera_frame_msg_t *frame)
     }
 }
 
-static workbuddy_vision_expression_t map_expression(echomate_expression_t expression)
+static lexin_vision_expression_t map_expression(echomate_expression_t expression)
 {
     switch (expression) {
     case ECHOMATE_EXPRESSION_HAPPY:
-        return WORKBUDDY_VISION_EXPRESSION_HAPPY;
+        return LEXIN_VISION_EXPRESSION_HAPPY;
     case ECHOMATE_EXPRESSION_NEUTRAL:
-        return WORKBUDDY_VISION_EXPRESSION_NEUTRAL;
+        return LEXIN_VISION_EXPRESSION_NEUTRAL;
     case ECHOMATE_EXPRESSION_SAD:
-        return WORKBUDDY_VISION_EXPRESSION_SAD;
+        return LEXIN_VISION_EXPRESSION_SAD;
     case ECHOMATE_EXPRESSION_UNKNOWN:
     default:
-        return WORKBUDDY_VISION_EXPRESSION_UNKNOWN;
+        return LEXIN_VISION_EXPRESSION_UNKNOWN;
     }
 }
 
-static workbuddy_vision_backend_t map_backend(echomate_face_detector_backend_t backend)
+static lexin_vision_backend_t map_backend(echomate_face_detector_backend_t backend)
 {
     switch (backend) {
     case ECHOMATE_FACE_DETECTOR_ESP_WHO:
-        return WORKBUDDY_VISION_BACKEND_ESP_WHO;
+        return LEXIN_VISION_BACKEND_ESP_WHO;
     case ECHOMATE_FACE_DETECTOR_HEURISTIC:
-        return WORKBUDDY_VISION_BACKEND_HEURISTIC;
+        return LEXIN_VISION_BACKEND_HEURISTIC;
     default:
-        return WORKBUDDY_VISION_BACKEND_NONE;
+        return LEXIN_VISION_BACKEND_NONE;
     }
 }
 
-static workbuddy_vision_emotion_t map_emotion(echomate_emotion_t emotion)
+static lexin_vision_emotion_t map_emotion(echomate_emotion_t emotion)
 {
     switch (emotion) {
     case ECHOMATE_EMOTION_HAPPY:
-        return WORKBUDDY_VISION_EMOTION_HAPPY;
+        return LEXIN_VISION_EMOTION_HAPPY;
     case ECHOMATE_EMOTION_LONELY:
-        return WORKBUDDY_VISION_EMOTION_LONELY;
+        return LEXIN_VISION_EMOTION_LONELY;
     case ECHOMATE_EMOTION_ALERT:
-        return WORKBUDDY_VISION_EMOTION_ALERT;
+        return LEXIN_VISION_EMOTION_ALERT;
     case ECHOMATE_EMOTION_SLEEPY:
-        return WORKBUDDY_VISION_EMOTION_SLEEPY;
+        return LEXIN_VISION_EMOTION_SLEEPY;
     case ECHOMATE_EMOTION_CALM:
     default:
-        return WORKBUDDY_VISION_EMOTION_CALM;
+        return LEXIN_VISION_EMOTION_CALM;
     }
 }
 
@@ -109,7 +109,7 @@ static const char *emotion_response(echomate_emotion_t emotion)
     }
 }
 
-static void publish_snapshot(const workbuddy_vision_snapshot_t *snapshot)
+static void publish_snapshot(const lexin_vision_snapshot_t *snapshot)
 {
     portENTER_CRITICAL(&s_snapshot_lock);
     s_snapshot = *snapshot;
@@ -125,8 +125,8 @@ static void vision_task(void *arg)
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(VISION_START_DELAY_MS));
 
-    workbuddy_vision_snapshot_t snapshot = {0};
-    snapshot.emotion = WORKBUDDY_VISION_EMOTION_CALM;
+    lexin_vision_snapshot_t snapshot = {0};
+    snapshot.emotion = LEXIN_VISION_EMOTION_CALM;
     snapshot.emotion_confidence = 68;
     strlcpy(snapshot.response, "CALM AND LISTENING", sizeof(snapshot.response));
     snapshot.last_error = camera_port_init();
@@ -199,8 +199,8 @@ static void vision_task(void *arg)
             }
         } else {
             snapshot.face_detected = false;
-            snapshot.expression = WORKBUDDY_VISION_EXPRESSION_UNKNOWN;
-            snapshot.backend = WORKBUDDY_VISION_BACKEND_NONE;
+            snapshot.expression = LEXIN_VISION_EXPRESSION_UNKNOWN;
+            snapshot.backend = LEXIN_VISION_BACKEND_NONE;
             snapshot.confidence = 0;
             snapshot.inference_ms = 0;
             snapshot.face_x = 0;
@@ -216,7 +216,7 @@ static void vision_task(void *arg)
     }
 }
 
-esp_err_t workbuddy_vision_start(workbuddy_vision_callback_t callback, void *user_data)
+esp_err_t lexin_vision_start(lexin_vision_callback_t callback, void *user_data)
 {
     if (s_started) {
         return ESP_ERR_INVALID_STATE;
@@ -225,7 +225,7 @@ esp_err_t workbuddy_vision_start(workbuddy_vision_callback_t callback, void *use
     s_callback = callback;
     s_callback_user_data = user_data;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
-    s_snapshot.emotion = WORKBUDDY_VISION_EMOTION_CALM;
+    s_snapshot.emotion = LEXIN_VISION_EMOTION_CALM;
     s_snapshot.emotion_confidence = 68;
     strlcpy(s_snapshot.response, "CALM AND LISTENING", sizeof(s_snapshot.response));
     s_snapshot.last_error = ESP_ERR_INVALID_STATE;
@@ -250,7 +250,7 @@ esp_err_t workbuddy_vision_start(workbuddy_vision_callback_t callback, void *use
     }
 
     BaseType_t created = xTaskCreate(vision_task,
-                                     "workbuddy_vision",
+                                     "lexin_vision",
                                      VISION_TASK_STACK,
                                      NULL,
                                      VISION_TASK_PRIORITY,
@@ -266,7 +266,7 @@ esp_err_t workbuddy_vision_start(workbuddy_vision_callback_t callback, void *use
     return ESP_OK;
 }
 
-void workbuddy_vision_get_snapshot(workbuddy_vision_snapshot_t *snapshot)
+void lexin_vision_get_snapshot(lexin_vision_snapshot_t *snapshot)
 {
     if (!snapshot) {
         return;
@@ -276,7 +276,7 @@ void workbuddy_vision_get_snapshot(workbuddy_vision_snapshot_t *snapshot)
     portEXIT_CRITICAL(&s_snapshot_lock);
 }
 
-esp_err_t workbuddy_vision_copy_preview(uint16_t *pixels,
+esp_err_t lexin_vision_copy_preview(uint16_t *pixels,
                                         size_t pixel_count,
                                         uint32_t *frame_id)
 {

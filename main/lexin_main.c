@@ -20,14 +20,14 @@
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
 #include "nvs_flash.h"
-#include "workbuddy_actions.h"
-#include "workbuddy_display_test.h"
-#include "workbuddy_edge_advisor.h"
-#include "workbuddy_interaction.h"
-#include "workbuddy_triggers.h"
-#include "workbuddy_vision.h"
+#include "lexin_actions.h"
+#include "lexin_display_test.h"
+#include "lexin_edge_advisor.h"
+#include "lexin_interaction.h"
+#include "lexin_triggers.h"
+#include "lexin_vision.h"
 
-static const char *TAG = "workbuddy";
+static const char *TAG = "lexin";
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
@@ -41,11 +41,13 @@ static const char *TAG = "workbuddy";
 #define PROXY_ACTION_URL_MAX_LEN 160
 #define PROXY_RESPONSE_MAX_LEN 1024
 #define PROXY_DISCOVERY_MAX_HOSTS 254
-#define TRIGGER_WORKER_COUNT 2
+#define PROXY_DISCOVERY_UDP_PORT (CONFIG_LEXIN_PROXY_PORT + 1)
+#define TRIGGER_WORKER_COUNT 4
 
 static QueueHandle_t btn_queue;
 static EventGroupHandle_t wifi_event_group;
 static SemaphoreHandle_t context_mutex;
+static SemaphoreHandle_t proxy_mutex;
 static int wifi_retry_count;
 static char proxy_base_url[PROXY_BASE_URL_MAX_LEN];
 static char cached_weather_context[256];
@@ -54,7 +56,7 @@ static char cached_time_context[256];
 typedef struct {
     const char *source;
     uint32_t source_id;
-    workbuddy_action_id_t action_id;
+    lexin_action_id_t action_id;
 } trigger_event_t;
 
 typedef struct {
@@ -62,10 +64,10 @@ typedef struct {
     size_t len;
 } proxy_response_t;
 
-static void vision_snapshot_callback(const workbuddy_vision_snapshot_t *snapshot, void *user_data)
+static void vision_snapshot_callback(const lexin_vision_snapshot_t *snapshot, void *user_data)
 {
     (void)user_data;
-    workbuddy_screen_update_vision_context(snapshot);
+    lexin_screen_update_vision_context(snapshot);
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -75,7 +77,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
-        if (wifi_retry_count < CONFIG_WORKBUDDY_WIFI_MAXIMUM_RETRY) {
+        if (wifi_retry_count < CONFIG_LEXIN_WIFI_MAXIMUM_RETRY) {
             wifi_retry_count++;
             ESP_LOGW(TAG, "WiFi disconnected, retry %d", wifi_retry_count);
         } else {
@@ -116,8 +118,8 @@ static void wifi_init_sta(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = CONFIG_WORKBUDDY_WIFI_SSID,
-            .password = CONFIG_WORKBUDDY_WIFI_PASSWORD,
+            .ssid = CONFIG_LEXIN_WIFI_SSID,
+            .password = CONFIG_LEXIN_WIFI_PASSWORD,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
@@ -126,7 +128,7 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Connecting to WiFi SSID: %s", CONFIG_WORKBUDDY_WIFI_SSID);
+    ESP_LOGI(TAG, "Connecting to WiFi SSID: %s", CONFIG_LEXIN_WIFI_SSID);
 }
 
 static bool tcp_port_open(uint32_t host_addr)
@@ -145,7 +147,7 @@ static bool tcp_port_open(uint32_t host_addr)
 
     struct sockaddr_in dest = {
         .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_WORKBUDDY_PROXY_PORT),
+        .sin_port = htons(CONFIG_LEXIN_PROXY_PORT),
         .sin_addr.s_addr = host_addr,
     };
 
@@ -158,22 +160,50 @@ static const char *set_proxy_base_url(uint32_t addr)
 {
     snprintf(proxy_base_url, sizeof(proxy_base_url),
              "http://" IPSTR ":%d",
-             IP2STR((esp_ip4_addr_t *)&addr), CONFIG_WORKBUDDY_PROXY_PORT);
+             IP2STR((esp_ip4_addr_t *)&addr), CONFIG_LEXIN_PROXY_PORT);
     ESP_LOGI(TAG, "Found fast proxy: %s", proxy_base_url);
     return proxy_base_url;
 }
 
-static const char *get_proxy_base_url(void)
+static uint32_t discover_proxy_udp(void)
 {
-    if (strcmp(CONFIG_WORKBUDDY_PROXY_BASE_URL, "auto") != 0 &&
-        strlen(CONFIG_WORKBUDDY_PROXY_BASE_URL) > 0) {
-        return CONFIG_WORKBUDDY_PROXY_BASE_URL;
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sock < 0) {
+        return 0;
     }
 
-    if (proxy_base_url[0] != '\0') {
-        return proxy_base_url;
-    }
+    int enabled = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled));
+    struct timeval timeout = {
+        .tv_sec = 0,
+        .tv_usec = 450 * 1000,
+    };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
+    const char request[] = "LEXIN_DISCOVER_V1";
+    struct sockaddr_in broadcast = {
+        .sin_family = AF_INET,
+        .sin_port = htons(PROXY_DISCOVERY_UDP_PORT),
+        .sin_addr.s_addr = htonl(INADDR_BROADCAST),
+    };
+    sendto(sock, request, sizeof(request) - 1, 0,
+           (struct sockaddr *)&broadcast, sizeof(broadcast));
+
+    char reply[48] = {0};
+    struct sockaddr_in source = {0};
+    socklen_t source_len = sizeof(source);
+    int received = recvfrom(sock, reply, sizeof(reply) - 1, 0,
+                            (struct sockaddr *)&source, &source_len);
+    close(sock);
+
+    if (received <= 0 || strncmp(reply, "LEXIN_PROXY_V1", 14) != 0) {
+        return 0;
+    }
+    return source.sin_addr.s_addr;
+}
+
+static const char *discover_proxy_base_url(void)
+{
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     esp_netif_ip_info_t ip_info;
     if (netif == NULL || esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
@@ -181,19 +211,25 @@ static const char *get_proxy_base_url(void)
         return NULL;
     }
 
-    if (strlen(CONFIG_WORKBUDDY_PROXY_PREFERRED_HOST) > 0) {
+    if (strlen(CONFIG_LEXIN_PROXY_PREFERRED_HOST) > 0) {
         struct in_addr preferred_addr;
-        if (inet_aton(CONFIG_WORKBUDDY_PROXY_PREFERRED_HOST, &preferred_addr) != 0) {
+        if (inet_aton(CONFIG_LEXIN_PROXY_PREFERRED_HOST, &preferred_addr) != 0) {
             ESP_LOGI(TAG, "Checking preferred proxy host: %s",
-                     CONFIG_WORKBUDDY_PROXY_PREFERRED_HOST);
+                     CONFIG_LEXIN_PROXY_PREFERRED_HOST);
             if (tcp_port_open(preferred_addr.s_addr)) {
                 return set_proxy_base_url(preferred_addr.s_addr);
             }
             ESP_LOGW(TAG, "Preferred proxy is unavailable; discovering this PC automatically");
         } else {
             ESP_LOGW(TAG, "Configured proxy host is invalid: %s",
-                     CONFIG_WORKBUDDY_PROXY_PREFERRED_HOST);
+                     CONFIG_LEXIN_PROXY_PREFERRED_HOST);
         }
+    }
+
+    uint32_t announced_addr = discover_proxy_udp();
+    if (announced_addr != 0 && tcp_port_open(announced_addr)) {
+        ESP_LOGI(TAG, "Proxy discovered by UDP announcement");
+        return set_proxy_base_url(announced_addr);
     }
 
     if (ip_info.gw.addr != 0 && ip_info.gw.addr != ip_info.ip.addr &&
@@ -207,7 +243,7 @@ static const char *get_proxy_base_url(void)
 
     uint32_t self_host = ip & 0xffUL;
     ESP_LOGI(TAG, "Discovering proxy near device host .%lu on port %d",
-             (unsigned long)self_host, CONFIG_WORKBUDDY_PROXY_PORT);
+             (unsigned long)self_host, CONFIG_LEXIN_PROXY_PORT);
     for (uint32_t distance = 1; distance <= PROXY_DISCOVERY_MAX_HOSTS; distance++) {
         int32_t candidates[2] = {
             (int32_t)self_host - (int32_t)distance,
@@ -225,8 +261,26 @@ static const char *get_proxy_base_url(void)
         }
     }
 
-    ESP_LOGE(TAG, "Fast proxy not found. Start tools/workbuddy_proxy.js on this WiFi.");
+    ESP_LOGE(TAG, "Fast proxy not found. Start tools/lexin_proxy.js on this WiFi.");
     return NULL;
+}
+
+static const char *get_proxy_base_url(void)
+{
+    if (strcmp(CONFIG_LEXIN_PROXY_BASE_URL, "auto") != 0 &&
+        strlen(CONFIG_LEXIN_PROXY_BASE_URL) > 0) {
+        return CONFIG_LEXIN_PROXY_BASE_URL;
+    }
+    if (proxy_base_url[0] != '\0') {
+        return proxy_base_url;
+    }
+    if (!proxy_mutex || xSemaphoreTake(proxy_mutex, pdMS_TO_TICKS(18000)) != pdTRUE) {
+        return NULL;
+    }
+    const char *result = proxy_base_url[0] != '\0' ?
+        proxy_base_url : discover_proxy_base_url();
+    xSemaphoreGive(proxy_mutex);
+    return result;
 }
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -249,22 +303,22 @@ static void proxy_warmup_task(void *arg)
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     if (get_proxy_base_url() != NULL) {
         ESP_LOGI(TAG, "Fast proxy endpoint is ready");
-        workbuddy_enqueue_trigger("warmup", 0, WORKBUDDY_ACTION_WEATHER);
-        workbuddy_enqueue_trigger("warmup", 1, WORKBUDDY_ACTION_TIME);
+        lexin_enqueue_trigger("warmup", 0, LEXIN_ACTION_WEATHER);
+        lexin_enqueue_trigger("warmup", 1, LEXIN_ACTION_TIME);
     }
     vTaskDelete(NULL);
 }
 
-static void cache_fast_context(workbuddy_action_id_t action_id, const char *text)
+static void cache_fast_context(lexin_action_id_t action_id, const char *text)
 {
     if (!text || !context_mutex ||
-        (action_id != WORKBUDDY_ACTION_WEATHER && action_id != WORKBUDDY_ACTION_TIME)) {
+        (action_id != LEXIN_ACTION_WEATHER && action_id != LEXIN_ACTION_TIME)) {
         return;
     }
     if (xSemaphoreTake(context_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         return;
     }
-    char *target = action_id == WORKBUDDY_ACTION_WEATHER ?
+    char *target = action_id == LEXIN_ACTION_WEATHER ?
         cached_weather_context : cached_time_context;
     snprintf(target, 256, "%s", text);
     xSemaphoreGive(context_mutex);
@@ -286,7 +340,7 @@ static void show_fast_local_advisor(void)
 
     char interaction_context[320];
     char advisor_text[PROXY_RESPONSE_MAX_LEN];
-    workbuddy_interaction_build_context(interaction_context, sizeof(interaction_context));
+    lexin_interaction_build_context(interaction_context, sizeof(interaction_context));
     size_t used = strlen(edge_context);
     if (used + 1 < sizeof(edge_context)) {
         edge_context[used++] = '\n';
@@ -296,22 +350,40 @@ static void show_fast_local_advisor(void)
         strncat(edge_context, interaction_context,
                 sizeof(edge_context) - strlen(edge_context) - 1);
     }
-    if (workbuddy_edge_advisor_infer_text(edge_context,
+    if (lexin_edge_advisor_infer_text(edge_context,
                                            advisor_text,
                                            sizeof(advisor_text))) {
         ESP_LOGI(TAG, "Fast local advisor result: %s", advisor_text);
-        workbuddy_screen_show_result_text(WORKBUDDY_ACTION_AI_INSIGHT, advisor_text);
+        lexin_screen_show_result_text(LEXIN_ACTION_AI_INSIGHT, advisor_text);
     }
 }
 
-static void request_proxy_action(const workbuddy_action_t *action)
+static void show_cached_action(lexin_action_id_t action_id)
+{
+    if (!context_mutex ||
+        (action_id != LEXIN_ACTION_WEATHER && action_id != LEXIN_ACTION_TIME)) {
+        return;
+    }
+    char cached[256] = {0};
+    if (xSemaphoreTake(context_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        const char *source = action_id == LEXIN_ACTION_WEATHER ?
+            cached_weather_context : cached_time_context;
+        snprintf(cached, sizeof(cached), "%s", source);
+        xSemaphoreGive(context_mutex);
+    }
+    if (cached[0] != '\0') {
+        lexin_screen_show_result_text(action_id, cached);
+    }
+}
+
+static void request_proxy_action(const lexin_action_t *action)
 {
     EventBits_t bits = xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT,
                                            pdFALSE, pdTRUE,
                                            pdMS_TO_TICKS(ACTION_WIFI_WAIT_MS));
     if ((bits & WIFI_CONNECTED_BIT) == 0) {
         ESP_LOGW(TAG, "%s requested, but WiFi did not connect in time", action->name);
-        workbuddy_screen_show_error(action->id);
+        lexin_screen_show_error(action->id);
         return;
     }
 
@@ -327,7 +399,7 @@ static void request_proxy_action(const workbuddy_action_t *action)
     }
     if (base_url == NULL) {
         ESP_LOGE(TAG, "%s requested, but fast proxy endpoint is not ready", action->name);
-        workbuddy_screen_show_error(action->id);
+        lexin_screen_show_error(action->id);
         return;
     }
 
@@ -339,7 +411,7 @@ static void request_proxy_action(const workbuddy_action_t *action)
         .url = action_url,
         .method = HTTP_METHOD_GET,
         .event_handler = http_event_handler,
-        .timeout_ms = action->id == WORKBUDDY_ACTION_AI_INSIGHT ?
+        .timeout_ms = action->id == LEXIN_ACTION_AI_INSIGHT ?
             PROXY_AI_HTTP_TIMEOUT_MS : PROXY_FAST_HTTP_TIMEOUT_MS,
         .user_data = &response,
     };
@@ -347,7 +419,7 @@ static void request_proxy_action(const workbuddy_action_t *action)
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         ESP_LOGE(TAG, "Failed to init HTTP client");
-        workbuddy_screen_show_error(action->id);
+        lexin_screen_show_error(action->id);
         return;
     }
 
@@ -362,11 +434,11 @@ static void request_proxy_action(const workbuddy_action_t *action)
         }
         if (status_code >= 200 && status_code < 300 && response.len > 0) {
             cache_fast_context(action->id, response.text);
-            if (action->id == WORKBUDDY_ACTION_AI_INSIGHT) {
+            if (action->id == LEXIN_ACTION_AI_INSIGHT) {
                 char interaction_context[320];
                 char edge_context[PROXY_RESPONSE_MAX_LEN];
                 char advisor_text[PROXY_RESPONSE_MAX_LEN];
-                workbuddy_interaction_build_context(interaction_context, sizeof(interaction_context));
+                lexin_interaction_build_context(interaction_context, sizeof(interaction_context));
                 edge_context[0] = '\0';
                 strncpy(edge_context, response.text, sizeof(edge_context) - 1);
                 edge_context[sizeof(edge_context) - 1] = '\0';
@@ -381,27 +453,27 @@ static void request_proxy_action(const workbuddy_action_t *action)
                     edge_context[sizeof(edge_context) - 1] = '\0';
                 }
                 ESP_LOGI(TAG, "Edge advisor enriched context: %s", edge_context);
-                if (workbuddy_edge_advisor_infer_text(edge_context,
+                if (lexin_edge_advisor_infer_text(edge_context,
                                                        advisor_text,
                                                        sizeof(advisor_text))) {
                     ESP_LOGI(TAG, "Edge advisor result: %s", advisor_text);
-                    workbuddy_screen_show_result_text(action->id, advisor_text);
+                    lexin_screen_show_result_text(action->id, advisor_text);
                 } else {
-                    workbuddy_screen_show_error(action->id);
+                    lexin_screen_show_error(action->id);
                 }
             } else {
-                workbuddy_screen_show_result_text(action->id, response.text);
+                lexin_screen_show_result_text(action->id, response.text);
             }
         } else {
-            workbuddy_screen_show_error(action->id);
+            lexin_screen_show_error(action->id);
         }
     } else {
         ESP_LOGE(TAG, "Proxy request failed: %s", esp_err_to_name(err));
-        if (strcmp(CONFIG_WORKBUDDY_PROXY_BASE_URL, "auto") == 0) {
+        if (strcmp(CONFIG_LEXIN_PROXY_BASE_URL, "auto") == 0) {
             proxy_base_url[0] = '\0';
             ESP_LOGW(TAG, "Cleared stale proxy address; the next request will rediscover it");
         }
-        workbuddy_screen_show_error(action->id);
+        lexin_screen_show_error(action->id);
     }
 
     esp_http_client_cleanup(client);
@@ -412,7 +484,7 @@ static void trigger_task(void *arg)
     trigger_event_t event;
     while (1) {
         if (xQueueReceive(btn_queue, &event, portMAX_DELAY)) {
-            const workbuddy_action_t *action = workbuddy_get_action(event.action_id);
+            const lexin_action_t *action = lexin_get_action(event.action_id);
             if (action == NULL) {
                 ESP_LOGW(TAG, "Unknown action from %s%lu",
                          event.source, (unsigned long)event.source_id);
@@ -425,16 +497,18 @@ static void trigger_task(void *arg)
             fflush(stdout);
             ESP_LOGI(TAG, "%s%lu triggered %s action",
                      event.source, (unsigned long)event.source_id, action->name);
-            if (action->id == WORKBUDDY_ACTION_AI_INSIGHT) {
+            if (action->id == LEXIN_ACTION_AI_INSIGHT) {
                 show_fast_local_advisor();
+            } else {
+                show_cached_action(action->id);
             }
             request_proxy_action(action);
         }
     }
 }
 
-void workbuddy_enqueue_trigger(const char *source, uint32_t source_id,
-                               workbuddy_action_id_t action_id)
+void lexin_enqueue_trigger(const char *source, uint32_t source_id,
+                               lexin_action_id_t action_id)
 {
     trigger_event_t event = {
         .source = source,
@@ -450,6 +524,7 @@ void workbuddy_enqueue_trigger(const char *source, uint32_t source_id,
 static void init_trigger_queue(void)
 {
     context_mutex = xSemaphoreCreateMutex();
+    proxy_mutex = xSemaphoreCreateMutex();
     btn_queue = xQueueCreate(4, sizeof(trigger_event_t));
     for (int worker = 0; worker < TRIGGER_WORKER_COUNT; ++worker) {
         char name[16];
@@ -468,11 +543,11 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     init_trigger_queue();
-    workbuddy_start_screen_ui();
+    lexin_start_screen_ui();
     // Keep model initialization from blocking the display's first frame.
     vTaskDelay(pdMS_TO_TICKS(800));
-    workbuddy_edge_advisor_init();
-    esp_err_t vision_ret = workbuddy_vision_start(vision_snapshot_callback, NULL);
+    lexin_edge_advisor_init();
+    esp_err_t vision_ret = lexin_vision_start(vision_snapshot_callback, NULL);
     if (vision_ret != ESP_OK) {
         ESP_LOGW(TAG, "Vision service did not start: %s", esp_err_to_name(vision_ret));
     }

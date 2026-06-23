@@ -20,8 +20,7 @@ idf.py build
 if errorlevel 1 goto failed
 
 echo.
-echo Build OK. Use ESP-IDF flash, or run:
-echo idf.py -p COM3 flash
+echo Build OK. Run flash_firmware.bat to auto-detect and flash the board.
 echo.
 pause
 exit /b 0

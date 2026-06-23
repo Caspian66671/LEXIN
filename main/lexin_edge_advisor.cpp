@@ -1,4 +1,4 @@
-#include "workbuddy_edge_advisor.h"
+#include "lexin_edge_advisor.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,11 +11,11 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-#if WORKBUDDY_HAS_ESPDL_MODEL
+#if LEXIN_HAS_ESPDL_MODEL
 #include <map>
 #include "dl_model_base.hpp"
 #include "dl_tensor_base.hpp"
-extern const uint8_t workbuddy_advisor_espdl[] asm("_binary_workbuddy_advisor_espdl_start");
+extern const uint8_t lexin_advisor_espdl[] asm("_binary_lexin_advisor_espdl_start");
 #endif
 
 static const char *TAG = "edge_advisor";
@@ -361,7 +361,7 @@ static const char *risk_name(const advisor_context_t &ctx, advisor_class_t cls)
     return "LOW";
 }
 
-#if WORKBUDDY_HAS_ESPDL_MODEL
+#if LEXIN_HAS_ESPDL_MODEL
 static dl::Model *s_model;
 
 static int8_t quantize_feature(float value, int exponent)
@@ -374,7 +374,7 @@ static int8_t quantize_feature(float value, int exponent)
 static bool run_espdl_model(const float features[ADVISOR_FEATURE_COUNT], advisor_result_t *result)
 {
     if (s_model == nullptr) {
-        s_model = new dl::Model((const char *)workbuddy_advisor_espdl,
+        s_model = new dl::Model((const char *)lexin_advisor_espdl,
                                 fbs::MODEL_LOCATION_IN_FLASH_RODATA,
                                 0,
                                 dl::MEMORY_MANAGER_GREEDY,
@@ -437,9 +437,9 @@ static advisor_result_t infer_reference_int8(const advisor_context_t &ctx)
     return result;
 }
 
-void workbuddy_edge_advisor_init(void)
+void lexin_edge_advisor_init(void)
 {
-#if WORKBUDDY_HAS_ESPDL_MODEL
+#if LEXIN_HAS_ESPDL_MODEL
     advisor_result_t unused = {};
     float zero_features[ADVISOR_FEATURE_COUNT] = {};
     if (run_espdl_model(zero_features, &unused)) {
@@ -452,7 +452,7 @@ void workbuddy_edge_advisor_init(void)
 #endif
 }
 
-bool workbuddy_edge_advisor_infer_text(const char *context_text, char *out_text, size_t out_size)
+bool lexin_edge_advisor_infer_text(const char *context_text, char *out_text, size_t out_size)
 {
     if (out_text == nullptr || out_size == 0) {
         return false;
@@ -464,7 +464,7 @@ bool workbuddy_edge_advisor_infer_text(const char *context_text, char *out_text,
 
     advisor_result_t result = {};
     bool used_espdl = false;
-#if WORKBUDDY_HAS_ESPDL_MODEL
+#if LEXIN_HAS_ESPDL_MODEL
     used_espdl = run_espdl_model(features, &result);
 #endif
     if (!used_espdl) {

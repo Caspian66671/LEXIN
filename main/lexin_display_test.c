@@ -1,4 +1,4 @@
-#include "workbuddy_display_test.h"
+#include "lexin_display_test.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -21,15 +21,15 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "bsp/esp32_p4_function_ev_board.h"
-#include "workbuddy_actions.h"
-#include "workbuddy_interaction.h"
-#include "workbuddy_launcher.h"
-#include "workbuddy_triggers.h"
+#include "lexin_actions.h"
+#include "lexin_interaction.h"
+#include "lexin_launcher.h"
+#include "lexin_triggers.h"
 
 static const char *TAG = "screen_ui";
 
-LV_FONT_DECLARE(workbuddy_cn_20);
-LV_FONT_DECLARE(workbuddy_cn_28);
+LV_FONT_DECLARE(lexin_cn_20);
+LV_FONT_DECLARE(lexin_cn_28);
 
 #define LCD_H_RES 1024
 #define LCD_V_RES 600
@@ -46,7 +46,7 @@ LV_FONT_DECLARE(workbuddy_cn_28);
 #define TOUCH_POLL_MS 40
 #define TOUCH_RELEASE_MS 280
 #define EMOTION_PREVIEW_PIXELS \
-    (WORKBUDDY_VISION_PREVIEW_WIDTH * WORKBUDDY_VISION_PREVIEW_HEIGHT)
+    (LEXIN_VISION_PREVIEW_WIDTH * LEXIN_VISION_PREVIEW_HEIGHT)
 #define EMOTION_PREVIEW_X 20
 #define EMOTION_PREVIEW_Y 58
 #define RESULT_CACHE_SIZE 1024
@@ -62,7 +62,7 @@ static const char *s_pet_reason = "天气和日程待更新";
 static const char *s_pet_model_tip = "已准备好";
 static uint32_t s_pet_accent = 0x1c98d2;
 static int s_pet_service_count;
-static workbuddy_action_id_t s_pet_last_action = WORKBUDDY_ACTION_TIME;
+static lexin_action_id_t s_pet_last_action = LEXIN_ACTION_TIME;
 static char s_pet_weather_summary[96] = "天气待更新";
 static char s_pet_calendar_summary[96] = "日程待更新";
 static char s_pet_combined_reason[256] = "天气和日程待更新";
@@ -74,7 +74,7 @@ static char s_pet_cloud_meta[96] = "等待云端模型";
 static const char *s_pet_weather_scene = "天气待更新";
 static const char *s_pet_time_scene = "日程待更新";
 static const char *s_pet_emotion_scene = "状态待更新";
-static workbuddy_emotion_state_t s_emotion_state = WORKBUDDY_EMOTION_UNKNOWN;
+static lexin_emotion_state_t s_emotion_state = LEXIN_EMOTION_UNKNOWN;
 static int64_t s_last_vision_page_refresh_ms;
 static uint16_t *s_emotion_preview_pixels;
 static uint16_t *s_emotion_preview_back_pixels;
@@ -99,7 +99,7 @@ static void refresh_pet_combined_tip(void);
 static bool lvgl_show_pet_ai_page(void);
 static bool lvgl_show_suggestion_page(void);
 static bool lvgl_show_emotion_page(void);
-static bool lvgl_refresh_emotion_live(const workbuddy_vision_snapshot_t *snapshot);
+static bool lvgl_refresh_emotion_live(const lexin_vision_snapshot_t *snapshot);
 static void update_pet_from_ai_context(void);
 
 static void lvgl_set_bg(lv_obj_t *obj, uint32_t color)
@@ -305,25 +305,25 @@ static void refresh_pet_combined_tip(void)
 static void update_pet_from_ai_context(void)
 {
     switch (s_emotion_state) {
-    case WORKBUDDY_EMOTION_HAPPY:
+    case LEXIN_EMOTION_HAPPY:
         s_pet_emotion_scene = "陪伴状态积极";
         s_pet_state = "运行良好";
         s_pet_tip = "先专注学习一小时";
         s_pet_accent = 0x1c98d2;
         break;
-    case WORKBUDDY_EMOTION_TIRED:
+    case LEXIN_EMOTION_TIRED:
         s_pet_emotion_scene = "陪伴状态疲惫";
         s_pet_state = "风险提醒";
         s_pet_tip = "休息五分钟再继续";
         s_pet_accent = 0xff9f22;
         break;
-    case WORKBUDDY_EMOTION_FOCUSED:
+    case LEXIN_EMOTION_FOCUSED:
         s_pet_emotion_scene = "专注推进中";
         s_pet_state = "重点推进";
         s_pet_tip = "先专注学习一小时";
         s_pet_accent = 0x2f86ff;
         break;
-    case WORKBUDDY_EMOTION_NEUTRAL:
+    case LEXIN_EMOTION_NEUTRAL:
         s_pet_emotion_scene = "陪伴状态平稳";
         break;
     default:
@@ -547,7 +547,7 @@ static const char *calendar_pet_suggestion(const char *time_value, const char *h
 static void update_pet_tip_from_weather(const char *weather, const char *rain, const char *advice)
 {
     s_pet_service_count++;
-    s_pet_last_action = WORKBUDDY_ACTION_WEATHER;
+    s_pet_last_action = LEXIN_ACTION_WEATHER;
     int rain_percent = parse_percent_value(rain);
     const char *weather_cn = weather_to_cn(weather);
     const char *suggestion_cn = weather_pet_suggestion(weather, rain, advice);
@@ -586,7 +586,7 @@ static void update_pet_tip_from_weather(const char *weather, const char *rain, c
 static void update_pet_tip_from_calendar(const char *time_value, const char *holiday_cn, const char *day_type)
 {
     s_pet_service_count++;
-    s_pet_last_action = WORKBUDDY_ACTION_TIME;
+    s_pet_last_action = LEXIN_ACTION_TIME;
     int hour = parse_hour_value(time_value);
     const char *suggestion_cn = calendar_pet_suggestion(time_value, holiday_cn, day_type);
     const bool rest_day = calendar_rest_day(holiday_cn, day_type);
@@ -856,7 +856,7 @@ static void update_pet_tip_from_insight(const char *text)
     copy_field_value(text, "CLOUD_INSIGHT:", cloud_insight, sizeof(cloud_insight));
 
     s_pet_service_count++;
-    s_pet_last_action = WORKBUDDY_ACTION_AI_INSIGHT;
+    s_pet_last_action = LEXIN_ACTION_AI_INSIGHT;
     const char *edge_value = field_has_value(edge_insight) ? edge_insight : insight;
     const bool cloud_ready = ascii_contains_ci(cloud_model, "DEEPSEEK") && field_has_value(cloud_insight);
     s_pet_tip = enterprise_insight_tip(edge_value);
@@ -892,15 +892,15 @@ static void update_pet_tip_from_insight(const char *text)
     snprintf(s_pet_combined_tip, sizeof(s_pet_combined_tip), "%s", s_pet_edge_summary);
 }
 
-static void update_pet_tip_querying(workbuddy_action_id_t action_id)
+static void update_pet_tip_querying(lexin_action_id_t action_id)
 {
     s_pet_last_action = action_id;
-    if (action_id == WORKBUDDY_ACTION_WEATHER) {
+    if (action_id == LEXIN_ACTION_WEATHER) {
         s_pet_state = "查询天气";
         s_pet_tip = "正在看天气";
         s_pet_reason = "查询请求";
         s_pet_accent = 0x1c98d2;
-    } else if (action_id == WORKBUDDY_ACTION_TIME) {
+    } else if (action_id == LEXIN_ACTION_TIME) {
         s_pet_state = "查询日程";
         s_pet_tip = "正在同步日程";
         s_pet_reason = "查询请求";
@@ -911,7 +911,7 @@ static void update_pet_tip_querying(workbuddy_action_id_t action_id)
         s_pet_reason = "硕士研伴";
         s_pet_accent = 0x9465ff;
     }
-    s_pet_model_tip = action_id == WORKBUDDY_ACTION_AI_INSIGHT ? "DeepSeek 思考中" : "已准备好";
+    s_pet_model_tip = action_id == LEXIN_ACTION_AI_INSIGHT ? "DeepSeek 思考中" : "已准备好";
 }
 
 static int lunar_token_value(const char *token)
@@ -1124,7 +1124,7 @@ static void lvgl_draw_weather_app_icon(lv_obj_t *parent, int x, int y)
     lvgl_card(icon, 35, 54, 54, 24, 0xffffff, 12);
     lvgl_card(icon, 26, 44, 30, 30, 0xffffff, LV_RADIUS_CIRCLE);
     lvgl_card(icon, 48, 38, 38, 38, 0xffffff, LV_RADIUS_CIRCLE);
-    lvgl_center_label(icon, "晴", 0, 78, 104, &workbuddy_cn_20, 0xffffff);
+    lvgl_center_label(icon, "晴", 0, 78, 104, &lexin_cn_20, 0xffffff);
 }
 
 static void lvgl_draw_calendar_app_icon(lv_obj_t *parent, int x, int y)
@@ -1137,7 +1137,7 @@ static void lvgl_draw_calendar_app_icon(lv_obj_t *parent, int x, int y)
     lvgl_card(icon, 0, 22, 104, 20, 0xffa600, 0);
     lvgl_center_label(icon, "JUN", 0, 8, 104, &lv_font_montserrat_20, 0xffffff);
     lvgl_center_label(icon, "15", 0, 42, 104, &lv_font_montserrat_32, 0x10283e);
-    lvgl_center_label(icon, "日程", 0, 78, 104, &workbuddy_cn_20, 0x9a6500);
+    lvgl_center_label(icon, "日程", 0, 78, 104, &lexin_cn_20, 0x9a6500);
 }
 
 static void lvgl_draw_ai_app_icon(lv_obj_t *parent, int x, int y)
@@ -1148,7 +1148,7 @@ static void lvgl_draw_ai_app_icon(lv_obj_t *parent, int x, int y)
     lv_obj_set_style_border_color(icon, lv_color_hex(0xc9b8ff), 0);
 
     lvgl_center_label(icon, "AI", 0, 28, 104, &lv_font_montserrat_32, 0xffffff);
-    lvgl_center_label(icon, "研伴", 0, 68, 104, &workbuddy_cn_20, 0xf3efff);
+    lvgl_center_label(icon, "研伴", 0, 68, 104, &lexin_cn_20, 0xf3efff);
 }
 
 static void lvgl_draw_emotion_app_icon(lv_obj_t *parent, int x, int y)
@@ -1162,7 +1162,7 @@ static void lvgl_draw_emotion_app_icon(lv_obj_t *parent, int x, int y)
     lvgl_card(face, 15, 20, 7, 7, 0x16324f, LV_RADIUS_CIRCLE);
     lvgl_card(face, 36, 20, 7, 7, 0x16324f, LV_RADIUS_CIRCLE);
     lvgl_card(face, 20, 39, 20, 5, 0x16324f, 3);
-    lvgl_center_label(icon, "情绪", 0, 78, 104, &workbuddy_cn_20, 0xffffff);
+    lvgl_center_label(icon, "情绪研伴", 0, 78, 104, &lexin_cn_20, 0xffffff);
 }
 
 static void lvgl_draw_pet_avatar(lv_obj_t *parent, int x, int y)
@@ -1231,14 +1231,14 @@ static bool lvgl_show_launcher(void)
     lvgl_set_vertical_gradient(scr, 0xe7f7ff, 0xc7f0ff);
     lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0x19afd8, 0);
     lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 102, 0x8fe2f5, 0), LV_OPA_40, 0);
-    lvgl_label(scr, "AI桌宠助手", 48, 22, &workbuddy_cn_28, 0xffffff);
+    lvgl_label(scr, "乐鑫 AI桌宠", 48, 22, &lexin_cn_28, 0xffffff);
 
     lv_obj_t *pet_card = lvgl_glass_card(scr, 66, 132, 348, 344, 28);
-    lvgl_label(pet_card, "小伙伴在线", 32, 30, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(pet_card, "小伙伴在线", 32, 30, &lexin_cn_28, 0x10283e);
     lvgl_card(pet_card, 266, 42, 10, 10, 0x2ecc71, LV_RADIUS_CIRCLE);
-    lvgl_label(pet_card, "在线", 284, 35, &workbuddy_cn_20, 0x2c8f57);
-    lvgl_label(pet_card, "今日陪伴", 34, 88, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *tip_label = lvgl_label(pet_card, s_pet_tip, 34, 118, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(pet_card, "在线", 284, 35, &lexin_cn_20, 0x2c8f57);
+    lvgl_label(pet_card, "今日陪伴", 34, 88, &lexin_cn_20, 0x577489);
+    lv_obj_t *tip_label = lvgl_label(pet_card, s_pet_tip, 34, 118, &lexin_cn_20, 0x10283e);
     lvgl_label_width(tip_label, 276);
 
     lvgl_draw_pet_avatar(pet_card, 34, 184);
@@ -1246,31 +1246,31 @@ static bool lvgl_show_launcher(void)
     lv_obj_set_style_bg_opa(state_pill, LV_OPA_80, 0);
     lv_obj_set_style_border_width(state_pill, 2, 0);
     lv_obj_set_style_border_color(state_pill, lv_color_hex(s_pet_accent), 0);
-    lv_obj_t *state_label = lvgl_label(state_pill, s_pet_state, 16, 10, &workbuddy_cn_20, s_pet_accent);
+    lv_obj_t *state_label = lvgl_label(state_pill, s_pet_state, 16, 10, &lexin_cn_20, s_pet_accent);
     lvgl_label_width(state_label, 96);
     char service_text[24];
     snprintf(service_text, sizeof(service_text), "服务%d次", s_pet_service_count);
-    lvgl_label(pet_card, service_text, 194, 234, &workbuddy_cn_20, 0x577489);
+    lvgl_label(pet_card, service_text, 194, 234, &lexin_cn_20, 0x577489);
     char focus_text[32];
-    workbuddy_interaction_status_text(focus_text, sizeof(focus_text));
-    lv_obj_t *focus_label = lvgl_label(pet_card, focus_text, 194, 262, &workbuddy_cn_20, 0x577489);
+    lexin_interaction_status_text(focus_text, sizeof(focus_text));
+    lv_obj_t *focus_label = lvgl_label(pet_card, focus_text, 194, 262, &lexin_cn_20, 0x577489);
     lvgl_label_width(focus_label, 116);
     lv_obj_t *analysis_btn = lvgl_card(pet_card, 180, 282, 142, 38, 0xe8f8ff, 19);
     lv_obj_set_style_bg_opa(analysis_btn, LV_OPA_80, 0);
     lv_obj_set_style_border_width(analysis_btn, 2, 0);
     lv_obj_set_style_border_color(analysis_btn, lv_color_hex(s_pet_accent), 0);
-    lvgl_label(analysis_btn, "查看洞察", 24, 8, &workbuddy_cn_20, s_pet_accent);
+    lvgl_label(analysis_btn, "查看洞察", 24, 8, &lexin_cn_20, s_pet_accent);
 
     lv_obj_t *panel = lvgl_glass_card(scr, 456, 132, 486, 344, 28);
     lvgl_draw_weather_app_icon(panel, 14, 48);
     lvgl_draw_calendar_app_icon(panel, 130, 48);
     lvgl_draw_emotion_app_icon(panel, 246, 48);
     lvgl_draw_ai_app_icon(panel, 362, 48);
-    lvgl_center_label(panel, "天气", 14, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "日历", 130, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "情绪", 246, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "研伴", 362, 170, 104, &workbuddy_cn_20, 0x10283e);
-    lvgl_center_label(panel, "天气  日历  边缘视觉  双模型研伴", 0, 270, 486, &workbuddy_cn_20, 0x577489);
+    lvgl_center_label(panel, "天气", 14, 170, 104, &lexin_cn_20, 0x10283e);
+    lvgl_center_label(panel, "日历", 130, 170, 104, &lexin_cn_20, 0x10283e);
+    lvgl_center_label(panel, "情绪研伴", 246, 170, 104, &lexin_cn_20, 0x10283e);
+    lvgl_center_label(panel, "研伴", 362, 170, 104, &lexin_cn_20, 0x10283e);
+    lvgl_center_label(panel, "天气  日历  情绪识别  双模型研伴", 0, 270, 486, &lexin_cn_20, 0x577489);
 
     lvgl_port_unlock();
     return true;
@@ -1287,48 +1287,48 @@ static bool lvgl_show_suggestion_page(void)
     lvgl_set_vertical_gradient(scr, 0xe7f7ff, 0xc7f0ff);
     lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0x19afd8, 0);
     lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 88, 0x8fe2f5, 0), LV_OPA_40, 0);
-    lvgl_label(scr, "返回", 32, 28, &workbuddy_cn_20, 0xffffff);
-    lvgl_label(scr, "研伴建议", 110, 24, &workbuddy_cn_28, 0xffffff);
+    lvgl_label(scr, "返回", 32, 28, &lexin_cn_20, 0xffffff);
+    lvgl_label(scr, "研伴建议", 110, 24, &lexin_cn_28, 0xffffff);
 
     lv_obj_t *main_card = lvgl_glass_card(scr, 78, 132, 438, 340, 28);
-    lvgl_label(main_card, "ESP-DL模型", 40, 34, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(main_card, "本地推理结果", 42, 92, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *tip_label = lvgl_label(main_card, s_pet_combined_tip, 42, 124, &workbuddy_cn_28, s_pet_accent);
+    lvgl_label(main_card, "ESP-DL模型", 40, 34, &lexin_cn_28, 0x10283e);
+    lvgl_label(main_card, "本地推理结果", 42, 92, &lexin_cn_20, 0x577489);
+    lv_obj_t *tip_label = lvgl_label(main_card, s_pet_combined_tip, 42, 124, &lexin_cn_28, s_pet_accent);
     lvgl_label_width(tip_label, 330);
-    lvgl_label(main_card, "分析依据", 42, 190, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *reason_label = lvgl_label(main_card, s_pet_combined_reason, 42, 222, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(main_card, "分析依据", 42, 190, &lexin_cn_20, 0x577489);
+    lv_obj_t *reason_label = lvgl_label(main_card, s_pet_combined_reason, 42, 222, &lexin_cn_20, 0x10283e);
     lvgl_label_width(reason_label, 330);
-    lv_obj_t *edge_meta = lvgl_label(main_card, s_pet_edge_meta, 42, 282, &workbuddy_cn_20, 0x577489);
+    lv_obj_t *edge_meta = lvgl_label(main_card, s_pet_edge_meta, 42, 282, &lexin_cn_20, 0x577489);
     lvgl_label_width(edge_meta, 330);
 
     lv_obj_t *ai_card = lvgl_glass_card(scr, 546, 132, 392, 340, 28);
-    lvgl_label(ai_card, "DeepSeek", 44, 34, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(ai_card, "云端建议", 46, 92, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *cloud_label = lvgl_label(ai_card, s_pet_cloud_summary, 46, 124, &workbuddy_cn_28, 0x9465ff);
+    lvgl_label(ai_card, "DeepSeek", 44, 34, &lexin_cn_28, 0x10283e);
+    lvgl_label(ai_card, "云端建议", 46, 92, &lexin_cn_20, 0x577489);
+    lv_obj_t *cloud_label = lvgl_label(ai_card, s_pet_cloud_summary, 46, 124, &lexin_cn_28, 0x9465ff);
     lvgl_label_width(cloud_label, 300);
-    lvgl_label(ai_card, "模型说明", 46, 190, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *cloud_meta = lvgl_label(ai_card, s_pet_cloud_meta, 46, 222, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(ai_card, "模型说明", 46, 190, &lexin_cn_20, 0x577489);
+    lv_obj_t *cloud_meta = lvgl_label(ai_card, s_pet_cloud_meta, 46, 222, &lexin_cn_20, 0x10283e);
     lvgl_label_width(cloud_meta, 300);
-    lvgl_label(ai_card, "对比价值", 46, 264, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *compare_label = lvgl_label(ai_card, "同一输入  不同推理风格", 46, 294, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(ai_card, "对比价值", 46, 264, &lexin_cn_20, 0x577489);
+    lv_obj_t *compare_label = lvgl_label(ai_card, "同一输入  不同推理风格", 46, 294, &lexin_cn_20, 0x10283e);
     lvgl_label_width(compare_label, 300);
 
     lvgl_port_unlock();
     return true;
 }
 
-static const char *vision_expression_text(const workbuddy_vision_snapshot_t *snapshot)
+static const char *vision_expression_text(const lexin_vision_snapshot_t *snapshot)
 {
     switch (snapshot->emotion) {
-    case WORKBUDDY_VISION_EMOTION_HAPPY:
+    case LEXIN_VISION_EMOTION_HAPPY:
         return "HAPPY";
-    case WORKBUDDY_VISION_EMOTION_LONELY:
+    case LEXIN_VISION_EMOTION_LONELY:
         return "LONELY";
-    case WORKBUDDY_VISION_EMOTION_ALERT:
+    case LEXIN_VISION_EMOTION_ALERT:
         return "ALERT";
-    case WORKBUDDY_VISION_EMOTION_SLEEPY:
+    case LEXIN_VISION_EMOTION_SLEEPY:
         return "SLEEPY";
-    case WORKBUDDY_VISION_EMOTION_CALM:
+    case LEXIN_VISION_EMOTION_CALM:
     default:
         return "CALM";
     }
@@ -1338,34 +1338,34 @@ static const char *vision_expression_text(const workbuddy_vision_snapshot_t *sna
         return "等待识别";
     }
     switch (snapshot->expression) {
-    case WORKBUDDY_VISION_EXPRESSION_HAPPY:
+    case LEXIN_VISION_EXPRESSION_HAPPY:
         return "开心";
-    case WORKBUDDY_VISION_EXPRESSION_SAD:
+    case LEXIN_VISION_EXPRESSION_SAD:
         return "低落";
-    case WORKBUDDY_VISION_EXPRESSION_NEUTRAL:
+    case LEXIN_VISION_EXPRESSION_NEUTRAL:
         return "平静";
-    case WORKBUDDY_VISION_EXPRESSION_UNKNOWN:
+    case LEXIN_VISION_EXPRESSION_UNKNOWN:
     default:
         return "分析中";
     }
 #endif
 }
 
-static uint32_t vision_expression_accent(const workbuddy_vision_snapshot_t *snapshot)
+static uint32_t vision_expression_accent(const lexin_vision_snapshot_t *snapshot)
 {
     switch (snapshot->emotion) {
-    case WORKBUDDY_VISION_EMOTION_HAPPY:
+    case LEXIN_VISION_EMOTION_HAPPY:
         return 0x20a56b;
-    case WORKBUDDY_VISION_EMOTION_ALERT:
+    case LEXIN_VISION_EMOTION_ALERT:
         return 0x6f6bd9;
-    case WORKBUDDY_VISION_EMOTION_CALM:
+    case LEXIN_VISION_EMOTION_CALM:
         return 0x1c98d2;
     default:
         return 0x71889a;
     }
 }
 
-static const char *vision_response_text(const workbuddy_vision_snapshot_t *snapshot)
+static const char *vision_response_text(const lexin_vision_snapshot_t *snapshot)
 {
     return snapshot->response[0] ? snapshot->response : "CALM AND LISTENING";
 }
@@ -1403,14 +1403,14 @@ static bool refresh_emotion_preview(void)
         memset(&s_emotion_preview_dsc, 0, sizeof(s_emotion_preview_dsc));
         s_emotion_preview_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
         s_emotion_preview_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-        s_emotion_preview_dsc.header.w = WORKBUDDY_VISION_PREVIEW_WIDTH;
-        s_emotion_preview_dsc.header.h = WORKBUDDY_VISION_PREVIEW_HEIGHT;
-        s_emotion_preview_dsc.header.stride = WORKBUDDY_VISION_PREVIEW_WIDTH * sizeof(uint16_t);
+        s_emotion_preview_dsc.header.w = LEXIN_VISION_PREVIEW_WIDTH;
+        s_emotion_preview_dsc.header.h = LEXIN_VISION_PREVIEW_HEIGHT;
+        s_emotion_preview_dsc.header.stride = LEXIN_VISION_PREVIEW_WIDTH * sizeof(uint16_t);
         s_emotion_preview_dsc.data_size = EMOTION_PREVIEW_PIXELS * sizeof(uint16_t);
         s_emotion_preview_dsc.data = (const uint8_t *)s_emotion_preview_pixels;
     }
 
-    return workbuddy_vision_copy_preview(s_emotion_preview_back_pixels,
+    return lexin_vision_copy_preview(s_emotion_preview_back_pixels,
                                          EMOTION_PREVIEW_PIXELS,
                                          &s_emotion_preview_frame_id) == ESP_OK;
 }
@@ -1424,7 +1424,7 @@ static void lvgl_commit_emotion_preview(void)
 }
 
 static void lvgl_update_face_box(lv_obj_t *box,
-                                 const workbuddy_vision_snapshot_t *snapshot)
+                                 const lexin_vision_snapshot_t *snapshot)
 {
     if (!box || !snapshot->face_detected || snapshot->input_width == 0 ||
         snapshot->input_height == 0 || snapshot->face_width == 0 ||
@@ -1436,25 +1436,25 @@ static void lvgl_update_face_box(lv_obj_t *box,
     }
 
     int x = EMOTION_PREVIEW_X +
-        (snapshot->face_x * WORKBUDDY_VISION_PREVIEW_WIDTH) /
+        (snapshot->face_x * LEXIN_VISION_PREVIEW_WIDTH) /
         snapshot->input_width;
     int y = EMOTION_PREVIEW_Y +
-        (snapshot->face_y * WORKBUDDY_VISION_PREVIEW_HEIGHT) /
+        (snapshot->face_y * LEXIN_VISION_PREVIEW_HEIGHT) /
         snapshot->input_height;
-    int w = (snapshot->face_width * WORKBUDDY_VISION_PREVIEW_WIDTH) /
+    int w = (snapshot->face_width * LEXIN_VISION_PREVIEW_WIDTH) /
         snapshot->input_width;
-    int h = (snapshot->face_height * WORKBUDDY_VISION_PREVIEW_HEIGHT) /
+    int h = (snapshot->face_height * LEXIN_VISION_PREVIEW_HEIGHT) /
         snapshot->input_height;
 
     if (w < 18) w = 18;
     if (h < 18) h = 18;
     if (x < EMOTION_PREVIEW_X) x = EMOTION_PREVIEW_X;
     if (y < EMOTION_PREVIEW_Y) y = EMOTION_PREVIEW_Y;
-    if (x + w > EMOTION_PREVIEW_X + WORKBUDDY_VISION_PREVIEW_WIDTH) {
-        w = EMOTION_PREVIEW_X + WORKBUDDY_VISION_PREVIEW_WIDTH - x;
+    if (x + w > EMOTION_PREVIEW_X + LEXIN_VISION_PREVIEW_WIDTH) {
+        w = EMOTION_PREVIEW_X + LEXIN_VISION_PREVIEW_WIDTH - x;
     }
-    if (y + h > EMOTION_PREVIEW_Y + WORKBUDDY_VISION_PREVIEW_HEIGHT) {
-        h = EMOTION_PREVIEW_Y + WORKBUDDY_VISION_PREVIEW_HEIGHT - y;
+    if (y + h > EMOTION_PREVIEW_Y + LEXIN_VISION_PREVIEW_HEIGHT) {
+        h = EMOTION_PREVIEW_Y + LEXIN_VISION_PREVIEW_HEIGHT - y;
     }
 
     lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
@@ -1462,9 +1462,9 @@ static void lvgl_update_face_box(lv_obj_t *box,
     lv_obj_set_size(box, w, h);
 }
 
-static bool lvgl_refresh_emotion_live(const workbuddy_vision_snapshot_t *snapshot)
+static bool lvgl_refresh_emotion_live(const lexin_vision_snapshot_t *snapshot)
 {
-    if (!snapshot || workbuddy_launcher_current_screen() != WORKBUDDY_SCREEN_EMOTION) {
+    if (!snapshot || lexin_launcher_current_screen() != LEXIN_SCREEN_EMOTION) {
         return false;
     }
 
@@ -1472,7 +1472,7 @@ static bool lvgl_refresh_emotion_live(const workbuddy_vision_snapshot_t *snapsho
     if (!lvgl_port_lock(80)) {
         return false;
     }
-    if (workbuddy_launcher_current_screen() != WORKBUDDY_SCREEN_EMOTION ||
+    if (lexin_launcher_current_screen() != LEXIN_SCREEN_EMOTION ||
         !s_emotion_preview_image) {
         lvgl_port_unlock();
         return false;
@@ -1508,7 +1508,7 @@ static bool lvgl_refresh_emotion_live(const workbuddy_vision_snapshot_t *snapsho
     snprintf(text, sizeof(text),
              "LCD  OK\nGT911 OK\nCAM  %s\nAI   %s\nRGB  288x216\nLOCAL ONLY\nNET  %s",
              snapshot->camera_ready ? "OK" : "WAIT",
-             snapshot->backend == WORKBUDDY_VISION_BACKEND_ESP_WHO ? "WHO OK" : "WAIT",
+             snapshot->backend == LEXIN_VISION_BACKEND_ESP_WHO ? "WHO OK" : "WAIT",
              snapshot->service_ready ? "READY" : "WAIT");
     lv_label_set_text(s_emotion_system_meta_label, text);
     lv_label_set_text(s_emotion_online_label,
@@ -1522,8 +1522,8 @@ static bool lvgl_refresh_emotion_live(const workbuddy_vision_snapshot_t *snapsho
 
 static bool lvgl_show_emotion_page(void)
 {
-    workbuddy_vision_snapshot_t snapshot;
-    workbuddy_vision_get_snapshot(&snapshot);
+    lexin_vision_snapshot_t snapshot;
+    lexin_vision_get_snapshot(&snapshot);
     bool preview_ready = refresh_emotion_preview();
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
@@ -1546,8 +1546,8 @@ static bool lvgl_show_emotion_page(void)
     lvgl_set_vertical_gradient(scr, 0x06111c, 0x0b2635);
     lv_obj_t *header = lvgl_card(scr, 0, 0, LCD_H_RES, 82, 0x0b3650, 0);
     lvgl_set_vertical_gradient(header, 0x0a2740, 0x086179);
-    lvgl_label(header, "返回", 24, 27, &workbuddy_cn_20, 0xffffff);
-    lvgl_label(header, "ECHOMATE", 112, 20, &lv_font_montserrat_28, 0xffffff);
+    lvgl_label(header, "返回", 24, 27, &lexin_cn_20, 0xffffff);
+    lvgl_label(header, "LEXIN VISION", 112, 20, &lv_font_montserrat_28, 0xffffff);
     lvgl_label(header, "EDGE AI COMPANION", 320, 29, &lv_font_montserrat_20, 0x99f3ff);
     lv_obj_t *online = lvgl_card(header, 824, 18, 166, 46, 0x20d9d2, 6);
     s_emotion_online_label = lvgl_center_label(
@@ -1560,8 +1560,8 @@ static bool lvgl_show_emotion_page(void)
     lvgl_label(camera_card, "CAMERA", 20, 14, &lv_font_montserrat_20, 0xb8f7ff);
     lv_obj_t *preview_frame = lvgl_card(camera_card,
                                         EMOTION_PREVIEW_X - 4, EMOTION_PREVIEW_Y - 4,
-                                        WORKBUDDY_VISION_PREVIEW_WIDTH + 8,
-                                        WORKBUDDY_VISION_PREVIEW_HEIGHT + 8,
+                                        LEXIN_VISION_PREVIEW_WIDTH + 8,
+                                        LEXIN_VISION_PREVIEW_HEIGHT + 8,
                                         0x061018, 4);
     lv_obj_set_style_border_width(preview_frame, 2, 0);
     lv_obj_set_style_border_color(preview_frame, lv_color_hex(0x5cf6ff), 0);
@@ -1602,7 +1602,7 @@ static bool lvgl_show_emotion_page(void)
     uint32_t accent = vision_expression_accent(&snapshot);
     s_emotion_expression_label = lvgl_label(
         emotion_card, vision_expression_text(&snapshot),
-        20, 66, &workbuddy_cn_28, accent);
+        20, 66, &lexin_cn_28, accent);
     lvgl_label_width(s_emotion_expression_label, 200);
     char emotion_meta[128];
     snprintf(emotion_meta, sizeof(emotion_meta),
@@ -1621,7 +1621,7 @@ static bool lvgl_show_emotion_page(void)
     snprintf(system_meta, sizeof(system_meta),
              "LCD  OK\nGT911 OK\nCAM  %s\nAI   %s\nRGB  288x216\nLOCAL ONLY\nNET  %s",
              snapshot.camera_ready ? "OK" : "WAIT",
-             snapshot.backend == WORKBUDDY_VISION_BACKEND_ESP_WHO ? "WHO OK" : "WAIT",
+             snapshot.backend == LEXIN_VISION_BACKEND_ESP_WHO ? "WHO OK" : "WAIT",
              snapshot.service_ready ? "READY" : "WAIT");
     s_emotion_system_meta_label = lvgl_label(system_card, system_meta, 18, 64,
                                              &lv_font_montserrat_20, 0x8deaf3);
@@ -1650,52 +1650,52 @@ static bool lvgl_show_pet_ai_page(void)
     lvgl_set_vertical_gradient(scr, 0xe7f7ff, 0xc7f0ff);
     lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0x19afd8, 0);
     lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 88, 0x8fe2f5, 0), LV_OPA_40, 0);
-    lvgl_label(scr, "返回", 32, 28, &workbuddy_cn_20, 0xffffff);
-    lvgl_label(scr, "生活助理", 110, 24, &workbuddy_cn_28, 0xffffff);
+    lvgl_label(scr, "返回", 32, 28, &lexin_cn_20, 0xffffff);
+    lvgl_label(scr, "生活助理", 110, 24, &lexin_cn_28, 0xffffff);
 
     lv_obj_t *main_card = lvgl_glass_card(scr, 92, 132, 430, 340, 28);
-    lvgl_label(main_card, "研伴节奏", 40, 34, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(main_card, "当前建议", 42, 92, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *tip_label = lvgl_label(main_card, s_pet_combined_tip, 42, 124, &workbuddy_cn_28, s_pet_accent);
+    lvgl_label(main_card, "研伴节奏", 40, 34, &lexin_cn_28, 0x10283e);
+    lvgl_label(main_card, "当前建议", 42, 92, &lexin_cn_20, 0x577489);
+    lv_obj_t *tip_label = lvgl_label(main_card, s_pet_combined_tip, 42, 124, &lexin_cn_28, s_pet_accent);
     lvgl_label_width(tip_label, 330);
-    lvgl_label(main_card, "本地输入", 42, 188, &workbuddy_cn_20, 0x577489);
+    lvgl_label(main_card, "本地输入", 42, 188, &lexin_cn_20, 0x577489);
     lv_obj_t *feature_chip = lvgl_card(main_card, 42, 222, 102, 38, 0xe8f8ff, 19);
     lv_obj_set_style_bg_opa(feature_chip, LV_OPA_80, 0);
-    lvgl_center_label(feature_chip, "21维模型", 0, 8, 102, &workbuddy_cn_20, 0x1c7ed6);
+    lvgl_center_label(feature_chip, "21维模型", 0, 8, 102, &lexin_cn_20, 0x1c7ed6);
     lv_obj_t *touch_chip = lvgl_card(main_card, 160, 222, 104, 38, 0xf3f0ff, 19);
     lv_obj_set_style_bg_opa(touch_chip, LV_OPA_80, 0);
-    lvgl_center_label(touch_chip, "触摸交互", 0, 8, 104, &workbuddy_cn_20, 0x7651d9);
+    lvgl_center_label(touch_chip, "触摸交互", 0, 8, 104, &lexin_cn_20, 0x7651d9);
     lv_obj_t *focus_chip = lvgl_card(main_card, 280, 222, 104, 38, 0xfff6df, 19);
     lv_obj_set_style_bg_opa(focus_chip, LV_OPA_80, 0);
-    lvgl_center_label(focus_chip, "专注计时", 0, 8, 104, &workbuddy_cn_20, 0xa96b00);
-    lv_obj_t *note_label = lvgl_label(main_card, "按时间和互动切换提醒", 42, 292, &workbuddy_cn_20, 0x577489);
+    lvgl_center_label(focus_chip, "专注计时", 0, 8, 104, &lexin_cn_20, 0xa96b00);
+    lv_obj_t *note_label = lvgl_label(main_card, "按时间和互动切换提醒", 42, 292, &lexin_cn_20, 0x577489);
     lvgl_label_width(note_label, 330);
 
     lv_obj_t *pet_card = lvgl_glass_card(scr, 556, 132, 360, 340, 28);
-    lvgl_label(pet_card, "桌宠反馈", 44, 34, &workbuddy_cn_28, 0x10283e);
+    lvgl_label(pet_card, "桌宠反馈", 44, 34, &lexin_cn_28, 0x10283e);
     lvgl_draw_pet_avatar(pet_card, 44, 84);
-    lvgl_label(pet_card, "提醒类型", 188, 96, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *state_label = lvgl_label(pet_card, s_pet_state, 188, 128, &workbuddy_cn_28, s_pet_accent);
+    lvgl_label(pet_card, "提醒类型", 188, 96, &lexin_cn_20, 0x577489);
+    lv_obj_t *state_label = lvgl_label(pet_card, s_pet_state, 188, 128, &lexin_cn_28, s_pet_accent);
     lvgl_label_width(state_label, 138);
     lv_obj_t *pill = lvgl_card(pet_card, 54, 220, 252, 46, 0xe8f8ff, 23);
     lv_obj_set_style_bg_opa(pill, LV_OPA_80, 0);
     lv_obj_set_style_border_width(pill, 2, 0);
     lv_obj_set_style_border_color(pill, lv_color_hex(s_pet_accent), 0);
-    lvgl_label(pill, s_pet_last_action == WORKBUDDY_ACTION_WEATHER ? "天气提醒" :
-               s_pet_last_action == WORKBUDDY_ACTION_TIME ? "日程提醒" : "生活提醒",
-               58, 10, &workbuddy_cn_20, s_pet_accent);
+    lvgl_label(pill, s_pet_last_action == LEXIN_ACTION_WEATHER ? "天气提醒" :
+               s_pet_last_action == LEXIN_ACTION_TIME ? "日程提醒" : "生活提醒",
+               58, 10, &lexin_cn_20, s_pet_accent);
 
     char service_text[32];
     snprintf(service_text, sizeof(service_text), "已服务%d次", s_pet_service_count);
-    lvgl_label(pet_card, service_text, 64, 278, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *model_label = lvgl_label(pet_card, "本地判断  云端润色", 64, 306, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(pet_card, service_text, 64, 278, &lexin_cn_20, 0x577489);
+    lv_obj_t *model_label = lvgl_label(pet_card, "本地判断  云端润色", 64, 306, &lexin_cn_20, 0x10283e);
     lvgl_label_width(model_label, 238);
 
     lvgl_port_unlock();
     return true;
 }
 
-static bool lvgl_show_querying_page(workbuddy_action_id_t action_id)
+static bool lvgl_show_querying_page(lexin_action_id_t action_id)
 {
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
@@ -1703,16 +1703,16 @@ static bool lvgl_show_querying_page(workbuddy_action_id_t action_id)
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
-    uint32_t bg = action_id == WORKBUDDY_ACTION_WEATHER ? 0xe9f6ff :
-                  action_id == WORKBUDDY_ACTION_TIME ? 0xf3fbf7 : 0xf4f1ff;
-    uint32_t accent = action_id == WORKBUDDY_ACTION_WEATHER ? 0x1c7ed6 :
-                      action_id == WORKBUDDY_ACTION_TIME ? 0x0f8a5f : 0x9465ff;
+    uint32_t bg = action_id == LEXIN_ACTION_WEATHER ? 0xe9f6ff :
+                  action_id == LEXIN_ACTION_TIME ? 0xf3fbf7 : 0xf4f1ff;
+    uint32_t accent = action_id == LEXIN_ACTION_WEATHER ? 0x1c7ed6 :
+                      action_id == LEXIN_ACTION_TIME ? 0x0f8a5f : 0x9465ff;
     lvgl_set_bg(scr, bg);
-    lvgl_label(scr, "返回", 32, 28, &workbuddy_cn_20, 0x16324f);
-    lvgl_label(scr, action_id == WORKBUDDY_ACTION_WEATHER ? "天气提醒" :
-               action_id == WORKBUDDY_ACTION_TIME ? "日程提醒" : "研伴建议",
-               70, 154, &workbuddy_cn_28, accent);
-    lvgl_label(scr, "加载中", 74, 232, &workbuddy_cn_28, 0x42627d);
+    lvgl_label(scr, "返回", 32, 28, &lexin_cn_20, 0x16324f);
+    lvgl_label(scr, action_id == LEXIN_ACTION_WEATHER ? "天气提醒" :
+               action_id == LEXIN_ACTION_TIME ? "日程提醒" : "研伴建议",
+               70, 154, &lexin_cn_28, accent);
+    lvgl_label(scr, "加载中", 74, 232, &lexin_cn_28, 0x42627d);
     lvgl_card(scr, 0, 510, LCD_H_RES, 90, accent, 0);
     lvgl_port_unlock();
     return true;
@@ -1764,41 +1764,41 @@ static bool lvgl_show_weather_result_page(const char *text)
     lv_obj_t *study_card = lvgl_glass_card(scr, 726, 350, 244, 86, 18);
     lv_obj_t *advice_card = lvgl_glass_card(scr, 54, 456, 916, 104, 22);
 
-    lv_obj_t *back = lvgl_label(scr, "返回", 32, 23, &workbuddy_cn_20, 0xffffff);
+    lv_obj_t *back = lvgl_label(scr, "返回", 32, 23, &lexin_cn_20, 0xffffff);
     lv_obj_set_style_text_letter_space(back, 1, 0);
-    lvgl_label(hero, "西安天气", 36, 26, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(hero, "当前天气", 40, 74, &workbuddy_cn_20, 0x577489);
+    lvgl_label(hero, "西安天气", 36, 26, &lexin_cn_28, 0x10283e);
+    lvgl_label(hero, "当前天气", 40, 74, &lexin_cn_20, 0x577489);
     lv_obj_t *temp_label = lvgl_label(hero, temp_number, 36, 96, &lv_font_montserrat_48, 0x0c253b);
     lv_obj_set_style_text_letter_space(temp_label, 1, 0);
     lv_obj_t *unit_label = lvgl_label(hero, "°C", 0, 0, &lv_font_montserrat_28, 0x395467);
     lv_obj_align_to(unit_label, temp_label, LV_ALIGN_OUT_RIGHT_MID, 12, 2);
-    lvgl_label(hero, weather_cn, 40, 168, &workbuddy_cn_28, 0x194d69);
-    lvgl_label(hero, suggestion_cn, 180, 174, &workbuddy_cn_20, 0x1b78a0);
+    lvgl_label(hero, weather_cn, 40, 168, &lexin_cn_28, 0x194d69);
+    lvgl_label(hero, suggestion_cn, 180, 174, &lexin_cn_20, 0x1b78a0);
     lvgl_draw_sun_cloud(scr);
 
     lvgl_card_border(rain_card, 0xffffff, 1);
-    lvgl_label(rain_card, "降雨", 24, 14, &workbuddy_cn_20, 0x577489);
+    lvgl_label(rain_card, "降雨", 24, 14, &lexin_cn_20, 0x577489);
     lvgl_label(rain_card, rain, 24, 42, &lv_font_montserrat_28, 0x10283e);
-    lvgl_label(rain_card, "短时参考", 104, 46, &workbuddy_cn_20, 0x577489);
+    lvgl_label(rain_card, "短时参考", 104, 46, &lexin_cn_20, 0x577489);
 
     lvgl_card_border(feel_card, 0xffffff, 1);
-    lvgl_label(feel_card, "体感", 24, 14, &workbuddy_cn_20, 0x577489);
-    lvgl_label(feel_card, feel_cn, 24, 44, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(feel_card, "体感", 24, 14, &lexin_cn_20, 0x577489);
+    lvgl_label(feel_card, feel_cn, 24, 44, &lexin_cn_20, 0x10283e);
 
     lvgl_card_border(outdoor_card, 0xffffff, 1);
-    lvgl_label(outdoor_card, "出行", 24, 14, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *outdoor_label = lvgl_label(outdoor_card, outdoor_cn, 24, 44, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(outdoor_card, "出行", 24, 14, &lexin_cn_20, 0x577489);
+    lv_obj_t *outdoor_label = lvgl_label(outdoor_card, outdoor_cn, 24, 44, &lexin_cn_20, 0x10283e);
     lvgl_label_width(outdoor_label, 158);
 
     lvgl_card_border(study_card, 0xffffff, 1);
-    lvgl_label(study_card, "学习", 24, 14, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *study_label = lvgl_label(study_card, study_cn, 24, 44, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(study_card, "学习", 24, 14, &lexin_cn_20, 0x577489);
+    lv_obj_t *study_label = lvgl_label(study_card, study_cn, 24, 44, &lexin_cn_20, 0x10283e);
     lvgl_label_width(study_label, 190);
 
     lvgl_card_border(advice_card, 0xffffff, 1);
-    lvgl_label(advice_card, "天气研判", 32, 18, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(advice_card, "进入21维本地模型", 32, 62, &workbuddy_cn_20, 0x577489);
-    lv_obj_t *advice_label = lvgl_label(advice_card, suggestion_cn, 418, 30, &workbuddy_cn_28, 0x1b78a0);
+    lvgl_label(advice_card, "天气研判", 32, 18, &lexin_cn_28, 0x10283e);
+    lvgl_label(advice_card, "进入21维本地模型", 32, 62, &lexin_cn_20, 0x577489);
+    lv_obj_t *advice_label = lvgl_label(advice_card, suggestion_cn, 418, 30, &lexin_cn_28, 0x1b78a0);
     lvgl_label_width(advice_label, 440);
 
     lvgl_port_unlock();
@@ -1866,10 +1866,10 @@ static bool lvgl_show_calendar_result_page(const char *text)
     lv_obj_t *holiday_card = lvgl_glass_card(scr, 534, 500, 166, 78, 18);
     lv_obj_t *suggestion_card = lvgl_glass_card(scr, 720, 500, 238, 78, 18);
 
-    lv_obj_t *back = lvgl_label(scr, "返回", 32, 23, &workbuddy_cn_20, 0xffffff);
+    lv_obj_t *back = lvgl_label(scr, "返回", 32, 23, &lexin_cn_20, 0xffffff);
     lv_obj_set_style_text_letter_space(back, 1, 0);
-    lvgl_label(main_card, "提醒服务", 32, 30, &workbuddy_cn_28, 0x10283e);
-    lvgl_label(main_card, month_name_cn(month), 32, 68, &workbuddy_cn_20, 0x667784);
+    lvgl_label(main_card, "提醒服务", 32, 30, &lexin_cn_28, 0x10283e);
+    lvgl_label(main_card, month_name_cn(month), 32, 68, &lexin_cn_20, 0x667784);
     lvgl_label(main_card, time_value, 734, 34, &lv_font_montserrat_32, 0x1b8ed2);
 
     const char *week[] = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
@@ -1878,7 +1878,7 @@ static bool lvgl_show_calendar_result_page(const char *text)
     const int cell_w = 126;
     const int cell_h = 34;
     for (int i = 0; i < 7; i++) {
-        lv_obj_t *week_label = lvgl_label(main_card, week[i], start_x + i * cell_w, 102, &workbuddy_cn_20, 0x667784);
+        lv_obj_t *week_label = lvgl_label(main_card, week[i], start_x + i * cell_w, 102, &lexin_cn_20, 0x667784);
         lv_obj_set_width(week_label, 72);
         lv_obj_set_style_text_align(week_label, LV_TEXT_ALIGN_CENTER, 0);
     }
@@ -1903,30 +1903,30 @@ static bool lvgl_show_calendar_result_page(const char *text)
     }
 
     lvgl_card_border(date_card, 0xffffff, 1);
-    lvgl_label(date_card, "日期", 20, 12, &workbuddy_cn_20, 0x606a76);
+    lvgl_label(date_card, "日期", 20, 12, &lexin_cn_20, 0x606a76);
     lv_obj_t *date_label = lvgl_label(date_card, date, 20, 34, &lv_font_montserrat_20, 0x151b24);
     lvgl_label_width(date_label, 172);
 
     lvgl_card_border(lunar_card, 0xffffff, 1);
-    lvgl_label(lunar_card, "农历", 20, 12, &workbuddy_cn_20, 0x606a76);
-    lv_obj_t *lunar_label = lvgl_label(lunar_card, lunar_cn, 20, 34, &workbuddy_cn_20, 0x2f86ff);
+    lvgl_label(lunar_card, "农历", 20, 12, &lexin_cn_20, 0x606a76);
+    lv_obj_t *lunar_label = lvgl_label(lunar_card, lunar_cn, 20, 34, &lexin_cn_20, 0x2f86ff);
     lvgl_label_width(lunar_label, 172);
 
     lvgl_card_border(holiday_card, 0xffffff, 1);
-    lvgl_label(holiday_card, "日期类型", 20, 12, &workbuddy_cn_20, 0x606a76);
-    lv_obj_t *holiday_label = lvgl_label(holiday_card, day_type_cn, 20, 34, &workbuddy_cn_20, 0x151b24);
+    lvgl_label(holiday_card, "日期类型", 20, 12, &lexin_cn_20, 0x606a76);
+    lv_obj_t *holiday_label = lvgl_label(holiday_card, day_type_cn, 20, 34, &lexin_cn_20, 0x151b24);
     lvgl_label_width(holiday_label, 124);
 
     lvgl_card_border(suggestion_card, 0xffffff, 1);
-    lvgl_label(suggestion_card, "今日安排", 20, 12, &workbuddy_cn_20, 0x606a76);
-    lv_obj_t *suggestion_label = lvgl_label(suggestion_card, suggestion_cn, 20, 34, &workbuddy_cn_20, 0x10283e);
+    lvgl_label(suggestion_card, "今日安排", 20, 12, &lexin_cn_20, 0x606a76);
+    lv_obj_t *suggestion_label = lvgl_label(suggestion_card, suggestion_cn, 20, 34, &lexin_cn_20, 0x10283e);
     lvgl_label_width(suggestion_label, 196);
 
     lvgl_port_unlock();
     return true;
 }
 
-static bool lvgl_show_error_page(workbuddy_action_id_t action_id)
+static bool lvgl_show_error_page(lexin_action_id_t action_id)
 {
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
@@ -1934,11 +1934,11 @@ static bool lvgl_show_error_page(workbuddy_action_id_t action_id)
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
     lvgl_set_bg(scr, 0xfff5f5);
-    lvgl_label(scr, "返回", 32, 26, &workbuddy_cn_20, 0x5a1f1f);
-    lvgl_label(scr, action_id == WORKBUDDY_ACTION_WEATHER ? "天气错误" :
-               action_id == WORKBUDDY_ACTION_TIME ? "日程错误" : "AI错误",
-               72, 154, &workbuddy_cn_28, 0xc03434);
-    lvgl_label(scr, "检查网络后再试", 76, 238, &workbuddy_cn_28, 0x7a4444);
+    lvgl_label(scr, "返回", 32, 26, &lexin_cn_20, 0x5a1f1f);
+    lvgl_label(scr, action_id == LEXIN_ACTION_WEATHER ? "天气错误" :
+               action_id == LEXIN_ACTION_TIME ? "日程错误" : "AI错误",
+               72, 154, &lexin_cn_28, 0xc03434);
+    lvgl_label(scr, "检查网络后再试", 76, 238, &lexin_cn_28, 0x7a4444);
     lvgl_port_unlock();
     return true;
 }
@@ -2096,27 +2096,27 @@ static void touch_task(void *arg)
         if (touched && point_count > 0 && !pressed) {
             TickType_t now = xTaskGetTickCount();
             if (now - last_trigger_tick > pdMS_TO_TICKS(TOUCH_RELEASE_MS)) {
-                workbuddy_action_id_t action_id = x[0] < (LCD_H_RES / 2)
-                    ? WORKBUDDY_ACTION_WEATHER
-                    : WORKBUDDY_ACTION_TIME;
-                workbuddy_touch_event_t event = workbuddy_launcher_handle_touch(x[0], y[0]);
-                if (event.result == WORKBUDDY_TOUCH_BACK) {
+                lexin_action_id_t action_id = x[0] < (LCD_H_RES / 2)
+                    ? LEXIN_ACTION_WEATHER
+                    : LEXIN_ACTION_TIME;
+                lexin_touch_event_t event = lexin_launcher_handle_touch(x[0], y[0]);
+                if (event.result == LEXIN_TOUCH_BACK) {
                     ESP_LOGI(TAG, "touch x=%u y=%u -> launcher", x[0], y[0]);
-                    workbuddy_screen_show_idle();
-                } else if (event.result == WORKBUDDY_TOUCH_OPEN_APP && event.has_action) {
+                    lexin_screen_show_idle();
+                } else if (event.result == LEXIN_TOUCH_OPEN_APP && event.has_action) {
                     action_id = event.action_id;
-                    workbuddy_interaction_record_action(action_id);
+                    lexin_interaction_record_action(action_id);
                     ESP_LOGI(TAG, "touch x=%u y=%u -> %s", x[0], y[0],
-                             action_id == WORKBUDDY_ACTION_WEATHER ? "weather" :
-                             action_id == WORKBUDDY_ACTION_TIME ? "calendar" : "ai_insight");
-                    workbuddy_screen_show_querying(action_id);
-                    workbuddy_enqueue_trigger("touch", action_id, action_id);
-                } else if (event.result == WORKBUDDY_TOUCH_OPEN_APP) {
-                    workbuddy_interaction_record_screen(event.screen);
-                    if (event.screen == WORKBUDDY_SCREEN_PET) {
+                             action_id == LEXIN_ACTION_WEATHER ? "weather" :
+                             action_id == LEXIN_ACTION_TIME ? "calendar" : "ai_insight");
+                    lexin_screen_show_querying(action_id);
+                    lexin_enqueue_trigger("touch", action_id, action_id);
+                } else if (event.result == LEXIN_TOUCH_OPEN_APP) {
+                    lexin_interaction_record_screen(event.screen);
+                    if (event.screen == LEXIN_SCREEN_PET) {
                         ESP_LOGI(TAG, "touch x=%u y=%u -> pet ai page", x[0], y[0]);
                         lvgl_show_pet_ai_page();
-                    } else if (event.screen == WORKBUDDY_SCREEN_EMOTION) {
+                    } else if (event.screen == LEXIN_SCREEN_EMOTION) {
                         ESP_LOGI(TAG, "touch x=%u y=%u -> emotion page", x[0], y[0]);
                         lvgl_show_emotion_page();
                     } else {
@@ -2141,9 +2141,9 @@ static void screen_ui_task(void *arg)
     init_lcd(&panel);
     s_panel = panel;
     lvgl_init_display();
-    workbuddy_launcher_init();
-    workbuddy_interaction_init();
-    workbuddy_screen_show_idle();
+    lexin_launcher_init();
+    lexin_interaction_init();
+    lexin_screen_show_idle();
     bool touch_ready = init_touch();
 
     ESP_LOGI(TAG, "Touch UI ready: launcher apps (touch=%d)", touch_ready);
@@ -2153,108 +2153,108 @@ static void screen_ui_task(void *arg)
     vTaskDelete(NULL);
 }
 
-void workbuddy_start_screen_ui(void)
+void lexin_start_screen_ui(void)
 {
     xTaskCreate(screen_ui_task, "screen_ui", 8192, NULL, 4, NULL);
 }
 
-void workbuddy_screen_show_idle(void)
+void lexin_screen_show_idle(void)
 {
-    workbuddy_launcher_show_launcher();
+    lexin_launcher_show_launcher();
     lvgl_show_launcher();
 }
 
-void workbuddy_screen_show_querying(workbuddy_action_id_t action_id)
+void lexin_screen_show_querying(lexin_action_id_t action_id)
 {
     update_pet_tip_querying(action_id);
-    if (action_id == WORKBUDDY_ACTION_WEATHER) {
-        workbuddy_launcher_show_screen(WORKBUDDY_SCREEN_WEATHER);
+    if (action_id == LEXIN_ACTION_WEATHER) {
+        lexin_launcher_show_screen(LEXIN_SCREEN_WEATHER);
         if (s_cached_weather[0] != '\0') {
             lvgl_show_weather_result_page(s_cached_weather);
         } else {
             lvgl_show_querying_page(action_id);
         }
-    } else if (action_id == WORKBUDDY_ACTION_TIME) {
-        workbuddy_launcher_show_screen(WORKBUDDY_SCREEN_CALENDAR);
+    } else if (action_id == LEXIN_ACTION_TIME) {
+        lexin_launcher_show_screen(LEXIN_SCREEN_CALENDAR);
         if (s_cached_calendar[0] != '\0') {
             lvgl_show_calendar_result_page(s_cached_calendar);
         } else {
             lvgl_show_querying_page(action_id);
         }
     } else {
-        workbuddy_launcher_show_screen(WORKBUDDY_SCREEN_SUGGESTION);
+        lexin_launcher_show_screen(LEXIN_SCREEN_SUGGESTION);
         lvgl_show_querying_page(action_id);
     }
 }
 
-void workbuddy_screen_show_result(workbuddy_action_id_t action_id)
+void lexin_screen_show_result(lexin_action_id_t action_id)
 {
     (void)action_id;
 }
 
-void workbuddy_screen_show_result_text(workbuddy_action_id_t action_id, const char *text)
+void lexin_screen_show_result_text(lexin_action_id_t action_id, const char *text)
 {
-    if (action_id == WORKBUDDY_ACTION_WEATHER) {
+    if (action_id == LEXIN_ACTION_WEATHER) {
         snprintf(s_cached_weather, sizeof(s_cached_weather), "%s", text ? text : "");
-        if (workbuddy_launcher_current_screen() == WORKBUDDY_SCREEN_WEATHER) {
+        if (lexin_launcher_current_screen() == LEXIN_SCREEN_WEATHER) {
             lvgl_show_weather_result_page(s_cached_weather);
         }
-    } else if (action_id == WORKBUDDY_ACTION_TIME) {
+    } else if (action_id == LEXIN_ACTION_TIME) {
         snprintf(s_cached_calendar, sizeof(s_cached_calendar), "%s", text ? text : "");
-        if (workbuddy_launcher_current_screen() == WORKBUDDY_SCREEN_CALENDAR) {
+        if (lexin_launcher_current_screen() == LEXIN_SCREEN_CALENDAR) {
             lvgl_show_calendar_result_page(s_cached_calendar);
         }
     } else {
         update_pet_tip_from_insight(text);
-        if (workbuddy_launcher_current_screen() == WORKBUDDY_SCREEN_SUGGESTION) {
+        if (lexin_launcher_current_screen() == LEXIN_SCREEN_SUGGESTION) {
             lvgl_show_suggestion_page();
         }
     }
 }
 
-void workbuddy_screen_show_error(workbuddy_action_id_t action_id)
+void lexin_screen_show_error(lexin_action_id_t action_id)
 {
-    workbuddy_screen_id_t expected = action_id == WORKBUDDY_ACTION_WEATHER ?
-        WORKBUDDY_SCREEN_WEATHER : action_id == WORKBUDDY_ACTION_TIME ?
-        WORKBUDDY_SCREEN_CALENDAR : WORKBUDDY_SCREEN_SUGGESTION;
-    if (workbuddy_launcher_current_screen() == expected) {
+    lexin_screen_id_t expected = action_id == LEXIN_ACTION_WEATHER ?
+        LEXIN_SCREEN_WEATHER : action_id == LEXIN_ACTION_TIME ?
+        LEXIN_SCREEN_CALENDAR : LEXIN_SCREEN_SUGGESTION;
+    if (lexin_launcher_current_screen() == expected) {
         lvgl_show_error_page(action_id);
     }
 }
 
-void workbuddy_screen_update_ai_context(workbuddy_face_state_t face, workbuddy_emotion_state_t emotion)
+void lexin_screen_update_ai_context(lexin_face_state_t face, lexin_emotion_state_t emotion)
 {
     (void)face;
     s_emotion_state = emotion;
     update_pet_from_ai_context();
 }
 
-void workbuddy_screen_update_vision_context(const workbuddy_vision_snapshot_t *snapshot)
+void lexin_screen_update_vision_context(const lexin_vision_snapshot_t *snapshot)
 {
     if (!snapshot) {
         return;
     }
 
-    workbuddy_face_state_t face = snapshot->face_detected ?
-        WORKBUDDY_FACE_DETECTED : WORKBUDDY_FACE_NOT_DETECTED;
-    workbuddy_emotion_state_t emotion = WORKBUDDY_EMOTION_UNKNOWN;
+    lexin_face_state_t face = snapshot->face_detected ?
+        LEXIN_FACE_DETECTED : LEXIN_FACE_NOT_DETECTED;
+    lexin_emotion_state_t emotion = LEXIN_EMOTION_UNKNOWN;
     switch (snapshot->expression) {
-    case WORKBUDDY_VISION_EXPRESSION_HAPPY:
-        emotion = WORKBUDDY_EMOTION_HAPPY;
+    case LEXIN_VISION_EXPRESSION_HAPPY:
+        emotion = LEXIN_EMOTION_HAPPY;
         break;
-    case WORKBUDDY_VISION_EXPRESSION_SAD:
-        emotion = WORKBUDDY_EMOTION_TIRED;
+    case LEXIN_VISION_EXPRESSION_SAD:
+        emotion = LEXIN_EMOTION_TIRED;
         break;
-    case WORKBUDDY_VISION_EXPRESSION_NEUTRAL:
-        emotion = WORKBUDDY_EMOTION_NEUTRAL;
+    case LEXIN_VISION_EXPRESSION_NEUTRAL:
+        emotion = LEXIN_EMOTION_NEUTRAL;
         break;
-    case WORKBUDDY_VISION_EXPRESSION_UNKNOWN:
+    case LEXIN_VISION_EXPRESSION_UNKNOWN:
     default:
         break;
     }
-    workbuddy_screen_update_ai_context(face, emotion);
+    lexin_screen_update_ai_context(face, emotion);
 
-    if (workbuddy_launcher_current_screen() == WORKBUDDY_SCREEN_EMOTION &&
+    if (lexin_launcher_current_screen() == LEXIN_SCREEN_EMOTION &&
         snapshot->updated_at_ms - s_last_vision_page_refresh_ms >= 120) {
         s_last_vision_page_refresh_ms = snapshot->updated_at_ms;
         lvgl_refresh_emotion_live(snapshot);

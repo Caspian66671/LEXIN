@@ -9,7 +9,7 @@ from esp_ppq.api import espdl_quantize_torch
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "main" / "models"
-ESPDL_MODEL_PATH = MODEL_DIR / "workbuddy_advisor.espdl"
+ESPDL_MODEL_PATH = MODEL_DIR / "lexin_advisor.espdl"
 TARGET = "esp32p4"
 NUM_OF_BITS = 8
 DEVICE = "cpu"

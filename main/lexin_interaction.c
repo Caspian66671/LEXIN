@@ -1,13 +1,13 @@
-#include "workbuddy_interaction.h"
+#include "lexin_interaction.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "esp_timer.h"
 
-#define WORKBUDDY_FOCUS_ROUND_MIN 25
-#define WORKBUDDY_BREAK_READY_MIN 5
-#define WORKBUDDY_IDLE_LONG_MIN 30
+#define LEXIN_FOCUS_ROUND_MIN 25
+#define LEXIN_BREAK_READY_MIN 5
+#define LEXIN_IDLE_LONG_MIN 30
 
 static bool s_initialized;
 static int64_t s_last_touch_us;
@@ -32,7 +32,7 @@ static int elapsed_min(int64_t start, int64_t end)
     return (int)((end - start) / (60LL * 1000LL * 1000LL));
 }
 
-void workbuddy_interaction_init(void)
+void lexin_interaction_init(void)
 {
     int64_t now = now_us();
     s_initialized = true;
@@ -49,7 +49,7 @@ void workbuddy_interaction_init(void)
 static void ensure_initialized(void)
 {
     if (!s_initialized) {
-        workbuddy_interaction_init();
+        lexin_interaction_init();
     }
 }
 
@@ -62,17 +62,17 @@ static void record_touch_time(void)
     s_total_taps++;
 }
 
-void workbuddy_interaction_record_action(workbuddy_action_id_t action_id)
+void lexin_interaction_record_action(lexin_action_id_t action_id)
 {
     record_touch_time();
     switch (action_id) {
-    case WORKBUDDY_ACTION_WEATHER:
+    case LEXIN_ACTION_WEATHER:
         s_weather_taps++;
         break;
-    case WORKBUDDY_ACTION_TIME:
+    case LEXIN_ACTION_TIME:
         s_calendar_taps++;
         break;
-    case WORKBUDDY_ACTION_AI_INSIGHT:
+    case LEXIN_ACTION_AI_INSIGHT:
         s_ai_taps++;
         break;
     default:
@@ -80,15 +80,15 @@ void workbuddy_interaction_record_action(workbuddy_action_id_t action_id)
     }
 }
 
-void workbuddy_interaction_record_screen(workbuddy_screen_id_t screen)
+void lexin_interaction_record_screen(lexin_screen_id_t screen)
 {
     record_touch_time();
-    if (screen == WORKBUDDY_SCREEN_PET) {
+    if (screen == LEXIN_SCREEN_PET) {
         s_pet_taps++;
     }
 }
 
-void workbuddy_interaction_get_snapshot(workbuddy_interaction_snapshot_t *snapshot)
+void lexin_interaction_get_snapshot(lexin_interaction_snapshot_t *snapshot)
 {
     if (snapshot == NULL) {
         return;
@@ -99,14 +99,14 @@ void workbuddy_interaction_get_snapshot(workbuddy_interaction_snapshot_t *snapsh
     int live_idle_min = elapsed_min(s_last_touch_us, now);
     int idle_min = live_idle_min > 0 ? live_idle_min : s_idle_before_last_touch_min;
     int focus_min = elapsed_min(s_focus_start_us, now);
-    int break_min = idle_min >= WORKBUDDY_BREAK_READY_MIN ? idle_min : 0;
-    int focus_rounds = focus_min / WORKBUDDY_FOCUS_ROUND_MIN;
+    int break_min = idle_min >= LEXIN_BREAK_READY_MIN ? idle_min : 0;
+    int focus_rounds = focus_min / LEXIN_FOCUS_ROUND_MIN;
     const char *study_state = "FOCUS";
-    if (idle_min >= WORKBUDDY_IDLE_LONG_MIN) {
+    if (idle_min >= LEXIN_IDLE_LONG_MIN) {
         study_state = "IDLE_LONG";
-    } else if (focus_min >= WORKBUDDY_FOCUS_ROUND_MIN) {
+    } else if (focus_min >= LEXIN_FOCUS_ROUND_MIN) {
         study_state = "BREAK_DUE";
-    } else if (break_min >= WORKBUDDY_BREAK_READY_MIN) {
+    } else if (break_min >= LEXIN_BREAK_READY_MIN) {
         study_state = "READY_FOCUS";
     }
 
@@ -122,13 +122,13 @@ void workbuddy_interaction_get_snapshot(workbuddy_interaction_snapshot_t *snapsh
     snapshot->study_state = study_state;
 }
 
-void workbuddy_interaction_build_context(char *out, size_t out_size)
+void lexin_interaction_build_context(char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0) {
         return;
     }
-    workbuddy_interaction_snapshot_t snapshot;
-    workbuddy_interaction_get_snapshot(&snapshot);
+    lexin_interaction_snapshot_t snapshot;
+    lexin_interaction_get_snapshot(&snapshot);
     snprintf(out, out_size,
              "TOUCH_WEATHER: %lu\nTOUCH_CALENDAR: %lu\nTOUCH_AI: %lu\n"
              "TOUCH_PET: %lu\nTOUCH_TOTAL: %lu\nIDLE_MIN: %d\n"
@@ -145,12 +145,12 @@ void workbuddy_interaction_build_context(char *out, size_t out_size)
              snapshot.study_state);
 }
 
-void workbuddy_interaction_status_text(char *out, size_t out_size)
+void lexin_interaction_status_text(char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0) {
         return;
     }
-    workbuddy_interaction_snapshot_t snapshot;
-    workbuddy_interaction_get_snapshot(&snapshot);
+    lexin_interaction_snapshot_t snapshot;
+    lexin_interaction_get_snapshot(&snapshot);
     snprintf(out, out_size, "专注%d分", snapshot.focus_min);
 }

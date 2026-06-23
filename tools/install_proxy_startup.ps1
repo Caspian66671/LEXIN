@@ -1,10 +1,10 @@
 param(
-    [string]$TaskName = "WorkBuddyQuickProxy"
+    [string]$TaskName = "LeXinQuickProxy"
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Script = Join-Path $Root "tools\start_workbuddy_proxy.ps1"
+$Script = Join-Path $Root "tools\start_lexin_proxy.ps1"
 
 $Action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
@@ -17,7 +17,7 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Principal $Principal `
-    -Description "Start WorkBuddy local proxy for ESP32-P4 demo." `
+    -Description "Start LeXin local proxy for ESP32-P4 demo." `
     -Force | Out-Null
 
 Write-Host "Installed startup task: $TaskName"

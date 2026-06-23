@@ -23,5 +23,5 @@ Write-Host "Saved local DeepSeek config:"
 Write-Host $ConfigPath
 Write-Host "Model: $model"
 Write-Host ""
-Write-Host "Starting WorkBuddy proxy with DeepSeek..."
-& (Join-Path $PSScriptRoot "start_workbuddy_proxy.ps1")
+Write-Host "Starting LeXin proxy with DeepSeek..."
+& (Join-Path $PSScriptRoot "start_lexin_proxy.ps1")
