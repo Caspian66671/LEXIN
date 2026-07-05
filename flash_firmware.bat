@@ -1,6 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+set "CCACHE_DIR=%CD%\.ccache_tmp"
 
 where idf.py >nul 2>nul
 if errorlevel 1 (

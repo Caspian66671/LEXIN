@@ -23,7 +23,9 @@ set(lexin_priv_requires
     lvgl
     lwip
     nvs_flash
-    lexin_vision)
+    lexin_vision
+    lexin_voice
+    lexin_face_auth)
 
 set(lexin_advisor_model "${CMAKE_CURRENT_LIST_DIR}/models/lexin_advisor.espdl")
 set(lexin_has_espdl_model 0)

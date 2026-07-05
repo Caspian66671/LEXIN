@@ -20,6 +20,7 @@ typedef struct {
 } lexin_interaction_snapshot_t;
 
 void lexin_interaction_init(void);
+void lexin_interaction_set_user(const char *user_id);
 void lexin_interaction_record_action(lexin_action_id_t action_id);
 void lexin_interaction_record_screen(lexin_screen_id_t screen);
 void lexin_interaction_get_snapshot(lexin_interaction_snapshot_t *snapshot);

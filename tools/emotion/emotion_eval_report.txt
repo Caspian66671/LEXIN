@@ -1,0 +1,18 @@
+accuracy: 0.6059
+labels: ['neutral', 'happy', 'sad', 'angry', 'surprise', 'fear', 'disgust']
+confusion matrix rows=true cols=pred:
+[[ 825   71  154   79   22   59   23]
+ [ 100 1475   47   39   58   32   23]
+ [ 309   71  512  149   35  112   59]
+ [ 157   33   90  496   43   57   82]
+ [  33   30   11   18  673   60    6]
+ [ 138   34  208  143  167  283   51]
+ [   4    5    3   11    2    1   85]]
+per-class:
+0 neutral   recall=0.669 top_pred=neutral 825/1233 pred_rate=0.218
+1 happy     recall=0.831 top_pred=happy 1475/1774 pred_rate=0.239
+2 sad       recall=0.411 top_pred=sad 512/1247 pred_rate=0.143
+3 angry     recall=0.518 top_pred=angry 496/958 pred_rate=0.130
+4 surprise  recall=0.810 top_pred=surprise 673/831 pred_rate=0.139
+5 fear      recall=0.276 top_pred=fear 283/1024 pred_rate=0.084
+6 disgust   recall=0.766 top_pred=disgust 85/111 pred_rate=0.046

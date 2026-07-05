@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "echomate_app.h"
+#include "expression_adapter.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -11,6 +12,57 @@
 #include "freertos/task.h"
 
 static const char *TAG = "lexin_vision";
+
+static lexin_vision_mood_t mood_from_fer(uint8_t fer_label)
+{
+    switch (fer_label) {
+    case 1:  return LEXIN_VISION_MOOD_HAPPY;      /* happy */
+    case 2:  return LEXIN_VISION_MOOD_TIRED;      /* sad */
+    case 3:                                       /* angry */
+    case 5:                                       /* fear */
+    case 6:  return LEXIN_VISION_MOOD_STRESSED;   /* disgust */
+    case 4:  return LEXIN_VISION_MOOD_SURPRISED;  /* surprise */
+    case 0:                                       /* neutral */
+    default: return LEXIN_VISION_MOOD_FOCUSED;
+    }
+}
+
+/* Keep emotion response live while validating the new model. Smoothing can be
+ * added back after the model itself is behaving well on board captures. */
+static lexin_vision_mood_t vote_mood(bool face_detected, uint8_t fer_label,
+                                     uint8_t fer_confidence, uint8_t *out_confidence)
+{
+    if (!face_detected) {
+        if (out_confidence) {
+            *out_confidence = 0;
+        }
+        return LEXIN_VISION_MOOD_AWAY;
+    }
+
+    if (out_confidence) {
+        *out_confidence = fer_confidence;
+    }
+    return mood_from_fer(fer_label);
+}
+
+static const char *mood_response(lexin_vision_mood_t mood)
+{
+    switch (mood) {
+    case LEXIN_VISION_MOOD_HAPPY:
+        return "YOU LOOK GREAT TODAY!";
+    case LEXIN_VISION_MOOD_TIRED:
+        return "TIRED? TAKE A SHORT BREAK.";
+    case LEXIN_VISION_MOOD_STRESSED:
+        return "BREATHE. ONE STEP AT A TIME.";
+    case LEXIN_VISION_MOOD_SURPRISED:
+        return "OH? SOMETHING INTERESTING?";
+    case LEXIN_VISION_MOOD_AWAY:
+        return "I'LL BE HERE WHEN YOU'RE BACK.";
+    case LEXIN_VISION_MOOD_FOCUSED:
+    default:
+        return "IN THE ZONE. KEEP GOING.";
+    }
+}
 
 #define VISION_TASK_STACK 8192
 #define VISION_TASK_PRIORITY 4
@@ -92,6 +144,8 @@ static lexin_vision_emotion_t map_emotion(echomate_emotion_t emotion)
     }
 }
 
+/* Kept for reference; the UI response now comes from mood_response(). */
+__attribute__((unused))
 static const char *emotion_response(echomate_emotion_t emotion)
 {
     switch (emotion) {
@@ -127,6 +181,7 @@ static void vision_task(void *arg)
 
     lexin_vision_snapshot_t snapshot = {0};
     snapshot.emotion = LEXIN_VISION_EMOTION_CALM;
+    snapshot.mood = LEXIN_VISION_MOOD_AWAY;
     snapshot.emotion_confidence = 68;
     strlcpy(snapshot.response, "CALM AND LISTENING", sizeof(snapshot.response));
     snapshot.last_error = camera_port_init();
@@ -194,9 +249,17 @@ static void vision_task(void *arg)
                 emotion_engine_update(&result, &audio, &emotion_state) == ESP_OK) {
                 snapshot.emotion = map_emotion(emotion_state.emotion);
                 snapshot.emotion_confidence = emotion_state.confidence;
-                strlcpy(snapshot.response, emotion_response(emotion_state.emotion),
-                        sizeof(snapshot.response));
             }
+
+            /* Neural mood: read the 7-class FER label, stabilise with temporal
+             * voting, group into a product mood. This drives the UI/report. */
+            expression_adapter_status_t exp_status = {0};
+            expression_adapter_get_status(&exp_status);
+            snapshot.mood = vote_mood(result.face_detected, exp_status.fer_label,
+                                      exp_status.fer_confidence,
+                                      &snapshot.mood_confidence);
+            strlcpy(snapshot.response, mood_response(snapshot.mood),
+                    sizeof(snapshot.response));
         } else {
             snapshot.face_detected = false;
             snapshot.expression = LEXIN_VISION_EXPRESSION_UNKNOWN;
@@ -209,6 +272,9 @@ static void vision_task(void *arg)
             snapshot.face_height = 0;
             snapshot.input_width = 0;
             snapshot.input_height = 0;
+            snapshot.mood = vote_mood(false, 0, 0, &snapshot.mood_confidence);
+            strlcpy(snapshot.response, mood_response(snapshot.mood),
+                    sizeof(snapshot.response));
         }
 
         publish_snapshot(&snapshot);
@@ -226,8 +292,9 @@ esp_err_t lexin_vision_start(lexin_vision_callback_t callback, void *user_data)
     s_callback_user_data = user_data;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     s_snapshot.emotion = LEXIN_VISION_EMOTION_CALM;
+    s_snapshot.mood = LEXIN_VISION_MOOD_AWAY;
+    strlcpy(s_snapshot.response, "I'LL BE HERE WHEN YOU'RE BACK.", sizeof(s_snapshot.response));
     s_snapshot.emotion_confidence = 68;
-    strlcpy(s_snapshot.response, "CALM AND LISTENING", sizeof(s_snapshot.response));
     s_snapshot.last_error = ESP_ERR_INVALID_STATE;
 
     s_preview_mutex = xSemaphoreCreateMutex();

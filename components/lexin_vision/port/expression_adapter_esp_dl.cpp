@@ -58,12 +58,20 @@ static expression_esp_dl_status_t s_status = {
     .score_neutral = 0,
     .score_happy = 0,
     .score_sad = 0,
+    .class_count = 0,
+    .fer_label = EXPRESSION_FER_NEUTRAL,
+    .fer_confidence = 0,
+    .fer_scores = {0},
+    .fer_label_name = "NEUTRAL",
     .fallback_reason = "not initialized",
 };
 #if ECHOMATE_EXPRESSION_ESP_DL_RUNTIME_AVAILABLE
 static bool s_init_logged;
 static bool s_input_logged;
 static uint8_t s_face_crop[EXPRESSION_ESP_DL_INPUT_BYTES];
+static uint8_t s_face_crop_raw_mean_luma;
+static uint8_t s_face_crop_raw_contrast;
+static bool s_face_crop_low_quality;
 
 extern const uint8_t expression_espdl[] asm("_binary_expression_espdl_start");
 static std::unique_ptr<dl::Model> s_model;
@@ -132,6 +140,56 @@ static bool prepare_face_crop(const vision_input_frame_t *input, const face_dete
         }
     }
 
+    uint32_t luma_sum = 0;
+    uint8_t luma_min = 255;
+    uint8_t luma_max = 0;
+    for (uint32_t y = 0; y < crop_h; ++y) {
+        for (uint32_t x = 0; x < crop_w; ++x) {
+            const size_t base = (static_cast<size_t>(y) * crop_w + x) * EXPRESSION_ESP_DL_CHANNELS;
+#if CONFIG_ECHOMATE_EXPRESSION_ESP_DL_INPUT_RGB888
+            const uint8_t luma = luma_from_rgb(s_face_crop[base],
+                                               s_face_crop[base + 1U],
+                                               s_face_crop[base + 2U]);
+#else
+            const uint8_t luma = s_face_crop[base];
+#endif
+            luma_sum += luma;
+            if (luma < luma_min) {
+                luma_min = luma;
+            }
+            if (luma > luma_max) {
+                luma_max = luma;
+            }
+        }
+    }
+
+    const uint8_t mean_luma = static_cast<uint8_t>(luma_sum / (crop_w * crop_h));
+    const uint8_t contrast = static_cast<uint8_t>(luma_max - luma_min);
+    s_face_crop_raw_mean_luma = mean_luma;
+    s_face_crop_raw_contrast = contrast;
+    s_face_crop_low_quality = contrast < 10U;
+
+    int32_t contrast_gain_q8 = 256;
+    if (contrast > 0U && contrast < 58U) {
+        contrast_gain_q8 = static_cast<int32_t>((58U * 256U) / contrast);
+        contrast_gain_q8 = std::min<int32_t>(contrast_gain_q8, 768);
+    } else if (contrast > 150U) {
+        contrast_gain_q8 = static_cast<int32_t>((150U * 256U) / contrast);
+        contrast_gain_q8 = std::max<int32_t>(contrast_gain_q8, 128);
+    }
+
+    for (uint32_t y = 0; y < crop_h; ++y) {
+        for (uint32_t x = 0; x < crop_w; ++x) {
+            const size_t base = (static_cast<size_t>(y) * crop_w + x) * EXPRESSION_ESP_DL_CHANNELS;
+            for (uint8_t c = 0; c < EXPRESSION_ESP_DL_CHANNELS; ++c) {
+                const int32_t centered = static_cast<int32_t>(s_face_crop[base + c]) - mean_luma;
+                int32_t adjusted = 128 + ((centered * contrast_gain_q8 + 128) >> 8);
+                adjusted = std::max<int32_t>(0, std::min<int32_t>(255, adjusted));
+                s_face_crop[base + c] = static_cast<uint8_t>(adjusted);
+            }
+        }
+    }
+
     return true;
 }
 #endif
@@ -140,6 +198,41 @@ static void copy_status(expression_esp_dl_status_t *status)
 {
     if (status) {
         *status = s_status;
+    }
+}
+
+const char *expression_fer_label_name(expression_fer_label_t label)
+{
+    switch (label) {
+    case EXPRESSION_FER_NEUTRAL:  return "NEUTRAL";
+    case EXPRESSION_FER_HAPPY:    return "HAPPY";
+    case EXPRESSION_FER_SAD:      return "SAD";
+    case EXPRESSION_FER_ANGRY:    return "ANGRY";
+    case EXPRESSION_FER_SURPRISE: return "SURPRISE";
+    case EXPRESSION_FER_FEAR:     return "FEAR";
+    case EXPRESSION_FER_DISGUST:  return "DISGUST";
+    default:                      return "UNKNOWN";
+    }
+}
+
+/* Collapse the 7-class FER label onto the legacy three-class expression that
+ * the rest of the firmware (emotion engine, UI, status counters) understands. */
+static echomate_expression_t fer_to_legacy_expression(expression_fer_label_t label)
+    __attribute__((unused));
+static echomate_expression_t fer_to_legacy_expression(expression_fer_label_t label)
+{
+    switch (label) {
+    case EXPRESSION_FER_HAPPY:
+        return ECHOMATE_EXPRESSION_HAPPY;
+    case EXPRESSION_FER_SAD:
+    case EXPRESSION_FER_ANGRY:
+    case EXPRESSION_FER_FEAR:
+    case EXPRESSION_FER_DISGUST:
+        return ECHOMATE_EXPRESSION_SAD;
+    case EXPRESSION_FER_NEUTRAL:
+    case EXPRESSION_FER_SURPRISE:
+    default:
+        return ECHOMATE_EXPRESSION_NEUTRAL;
     }
 }
 
@@ -392,6 +485,13 @@ esp_err_t expression_esp_dl_classify(const vision_input_frame_t *input,
     s_status.score_neutral = 0;
     s_status.score_happy = 0;
     s_status.score_sad = 0;
+    s_status.class_count = 0;
+    s_status.fer_label = EXPRESSION_FER_NEUTRAL;
+    s_status.fer_confidence = 0;
+    s_status.fer_label_name = "NEUTRAL";
+    for (int i = 0; i < EXPRESSION_FER_CLASS_COUNT; ++i) {
+        s_status.fer_scores[i] = 0;
+    }
 
 #if !ECHOMATE_EXPRESSION_ESP_DL_RUNTIME_AVAILABLE
     esp_err_t init_ret = expression_esp_dl_init(&s_status);
@@ -432,52 +532,86 @@ esp_err_t expression_esp_dl_classify(const vision_input_frame_t *input,
     s_model->run();
     s_status.inference_us = static_cast<uint32_t>(esp_timer_get_time() - start_us);
 
-    const int32_t scores[3] = {
-        output_value(output_tensor, 0),
-        output_value(output_tensor, 1),
-        output_value(output_tensor, 2),
-    };
-    s_status.score_neutral = static_cast<int16_t>(std::max<int32_t>(INT16_MIN, std::min<int32_t>(INT16_MAX, scores[0])));
-    s_status.score_happy = static_cast<int16_t>(std::max<int32_t>(INT16_MIN, std::min<int32_t>(INT16_MAX, scores[1])));
-    s_status.score_sad = static_cast<int16_t>(std::max<int32_t>(INT16_MIN, std::min<int32_t>(INT16_MAX, scores[2])));
+    /* Read up to EXPRESSION_FER_CLASS_COUNT outputs. A 3-class model still
+     * works (only neutral/happy/sad are populated); a 7-class FER model fills
+     * the rest. */
+    const int class_count = std::min<int>(EXPRESSION_FER_CLASS_COUNT,
+                                          static_cast<int>(output_tensor->get_size()));
+    int32_t scores[EXPRESSION_FER_CLASS_COUNT];
+    for (int i = 0; i < EXPRESSION_FER_CLASS_COUNT; ++i) {
+        scores[i] = (i < class_count) ? output_value(output_tensor, i) : INT32_MIN;
+        s_status.fer_scores[i] = static_cast<int16_t>(
+            std::max<int32_t>(INT16_MIN, std::min<int32_t>(INT16_MAX,
+                scores[i] == INT32_MIN ? 0 : scores[i])));
+    }
+    s_status.class_count = static_cast<uint8_t>(class_count);
+    s_status.score_neutral = s_status.fer_scores[EXPRESSION_FER_NEUTRAL];
+    s_status.score_happy = s_status.fer_scores[EXPRESSION_FER_HAPPY];
+    s_status.score_sad = s_status.fer_scores[EXPRESSION_FER_SAD];
 
     int best = 0;
-    int second = 1;
-    for (int i = 1; i < 3; ++i) {
+    int second = -1;
+    for (int i = 1; i < class_count; ++i) {
         if (scores[i] > scores[best]) {
             second = best;
             best = i;
-        } else if (i != best && scores[i] > scores[second]) {
+        } else if (i != best && (second < 0 || scores[i] > scores[second])) {
             second = i;
         }
     }
-    s_status.confidence = confidence_from_scores(scores[best], scores[second]);
+    const int32_t second_score = (second >= 0) ? scores[second] : scores[best];
+    s_status.confidence = confidence_from_scores(scores[best], second_score);
+    s_status.fer_label = static_cast<expression_fer_label_t>(best);
+    s_status.fer_confidence = s_status.confidence;
+    s_status.fer_label_name = expression_fer_label_name(s_status.fer_label);
+
+    if (s_status.fer_label == EXPRESSION_FER_SURPRISE &&
+        (s_face_crop_low_quality || s_face_crop_raw_mean_luma > 178U ||
+         s_face_crop_raw_mean_luma < 48U) &&
+        s_status.confidence < 88U) {
+        s_status.fer_label = EXPRESSION_FER_NEUTRAL;
+        s_status.fer_confidence = 50;
+        s_status.confidence = 50;
+        s_status.fer_label_name = expression_fer_label_name(s_status.fer_label);
+    }
 
     if (s_status.confidence < CONFIG_ECHOMATE_EXPRESSION_ESP_DL_MIN_CONFIDENCE) {
         *expression = ECHOMATE_EXPRESSION_NEUTRAL;
-    } else if (best == 1) {
-        *expression = ECHOMATE_EXPRESSION_HAPPY;
-    } else if (best == 2) {
-        *expression = ECHOMATE_EXPRESSION_SAD;
     } else {
-        *expression = ECHOMATE_EXPRESSION_NEUTRAL;
+        *expression = fer_to_legacy_expression(s_status.fer_label);
     }
 
     s_status.fallback_reason = "none";
     if (!s_input_logged) {
         ESP_LOGI(TAG,
-                 "ESP-DL expression run input=%ux%u c=%u min_conf=%d out=%" PRId32 ",%" PRId32 ",%" PRId32 " conf=%u inf=%" PRIu32 "us",
+                 "ESP-DL expression run input=%ux%u c=%u classes=%d min_conf=%d label=%s conf=%u inf=%" PRIu32 "us crop_mean=%u crop_contrast=%u",
                  s_status.input_width,
                  s_status.input_height,
                  s_status.input_channels,
+                 class_count,
                  CONFIG_ECHOMATE_EXPRESSION_ESP_DL_MIN_CONFIDENCE,
-                 scores[0],
-                 scores[1],
-                 scores[2],
+                 s_status.fer_label_name,
                  s_status.confidence,
-                 s_status.inference_us);
+                 s_status.inference_us,
+                 s_face_crop_raw_mean_luma,
+                 s_face_crop_raw_contrast);
         s_input_logged = true;
     }
+    /* Per-frame label so the emotion log/report (phase 2) and bring-up can
+     * observe the full 7-class prediction, not just the collapsed 3-class.
+     * Log at INFO whenever the label changes (handy for bring-up), and the
+     * full score vector at DEBUG. */
+    static int s_last_logged_label = -1;
+    if (static_cast<int>(s_status.fer_label) != s_last_logged_label) {
+        s_last_logged_label = static_cast<int>(s_status.fer_label);
+        ESP_LOGI(TAG, "emotion -> %s (conf=%u, inf=%" PRIu32 "us)",
+                 s_status.fer_label_name, s_status.fer_confidence, s_status.inference_us);
+    }
+    ESP_LOGD(TAG, "fer=%s conf=%u scores n=%d h=%d s=%d a=%d su=%d f=%d d=%d",
+             s_status.fer_label_name, s_status.fer_confidence,
+             s_status.fer_scores[0], s_status.fer_scores[1], s_status.fer_scores[2],
+             s_status.fer_scores[3], s_status.fer_scores[4], s_status.fer_scores[5],
+             s_status.fer_scores[6]);
 
     copy_status(status);
     return ESP_OK;

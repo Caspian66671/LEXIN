@@ -2,8 +2,9 @@
 
 #include <stddef.h>
 
-#define BACK_HIT_W 1024
-#define BACK_HIT_H 180
+#define BACK_HIT_W 160
+#define BACK_HIT_H 96
+#define SCREEN_H_RES 1024
 
 typedef struct {
     lexin_screen_id_t screen;
@@ -23,11 +24,23 @@ static const launcher_app_t s_apps[] = {
     {.screen = LEXIN_SCREEN_CALENDAR, .action_id = LEXIN_ACTION_TIME, .has_action = true, .x = 586, .y = 160, .w = 112, .h = 250},
     {.screen = LEXIN_SCREEN_EMOTION, .action_id = LEXIN_ACTION_TIME, .has_action = false, .x = 702, .y = 160, .w = 112, .h = 250},
     {.screen = LEXIN_SCREEN_SUGGESTION, .action_id = LEXIN_ACTION_AI_INSIGHT, .has_action = true, .x = 818, .y = 160, .w = 112, .h = 250},
+    {.screen = LEXIN_SCREEN_VOICE, .action_id = LEXIN_ACTION_TIME, .has_action = false, .x = 66, .y = 494, .w = 892, .h = 60},
 };
 
 static bool point_in_rect(uint16_t x, uint16_t y, const launcher_app_t *app)
 {
     return x >= app->x && x < app->x + app->w && y >= app->y && y < app->y + app->h;
+}
+
+static uint16_t mirror_launcher_x(uint16_t x)
+{
+    return x < SCREEN_H_RES ? (uint16_t)(SCREEN_H_RES - 1 - x) : x;
+}
+
+static bool is_back_hit(uint16_t x, uint16_t y)
+{
+    uint16_t mirrored_x = mirror_launcher_x(x);
+    return y < BACK_HIT_H && (x < BACK_HIT_W || mirrored_x < BACK_HIT_W);
 }
 
 void lexin_launcher_init(void)
@@ -52,8 +65,6 @@ void lexin_launcher_show_screen(lexin_screen_id_t screen)
 
 lexin_touch_event_t lexin_launcher_handle_touch(uint16_t x, uint16_t y)
 {
-    x = 1023 - x;
-
     lexin_touch_event_t event = {
         .result = LEXIN_TOUCH_NONE,
         .screen = s_current_screen,
@@ -61,7 +72,9 @@ lexin_touch_event_t lexin_launcher_handle_touch(uint16_t x, uint16_t y)
     };
 
     if (s_current_screen != LEXIN_SCREEN_LAUNCHER) {
-        (void)y;
+        if (!is_back_hit(x, y)) {
+            return event;
+        }
         s_current_screen = LEXIN_SCREEN_LAUNCHER;
         event.result = LEXIN_TOUCH_BACK;
         event.screen = s_current_screen;

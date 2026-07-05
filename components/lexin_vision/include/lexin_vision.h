@@ -34,6 +34,17 @@ typedef enum {
     LEXIN_VISION_EMOTION_SLEEPY,
 } lexin_vision_emotion_t;
 
+/* Product-facing moods, grouped from the neural model's 7 FER classes and
+ * stabilised by temporal voting. AWAY = no face / user not at the desk. */
+typedef enum {
+    LEXIN_VISION_MOOD_FOCUSED = 0,  /* neutral */
+    LEXIN_VISION_MOOD_HAPPY,        /* happy */
+    LEXIN_VISION_MOOD_TIRED,        /* sad */
+    LEXIN_VISION_MOOD_STRESSED,     /* angry + fear + disgust */
+    LEXIN_VISION_MOOD_SURPRISED,    /* surprise */
+    LEXIN_VISION_MOOD_AWAY,         /* no recent face */
+} lexin_vision_mood_t;
+
 typedef struct {
     bool service_ready;
     bool camera_ready;
@@ -41,6 +52,8 @@ typedef struct {
     lexin_vision_expression_t expression;
     lexin_vision_backend_t backend;
     lexin_vision_emotion_t emotion;
+    lexin_vision_mood_t mood;
+    uint8_t mood_confidence;
     uint8_t confidence;
     uint8_t emotion_confidence;
     uint32_t inference_ms;

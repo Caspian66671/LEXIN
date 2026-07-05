@@ -100,6 +100,8 @@ static void sync_esp_dl_status(void)
     s_status.score_neutral = s_esp_dl_status.score_neutral;
     s_status.score_happy = s_esp_dl_status.score_happy;
     s_status.score_sad = s_esp_dl_status.score_sad;
+    s_status.fer_label = (uint8_t)s_esp_dl_status.fer_label;
+    s_status.fer_confidence = s_esp_dl_status.fer_confidence;
 }
 
 static void record_expression(echomate_expression_t expression)

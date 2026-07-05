@@ -12,6 +12,9 @@ typedef enum {
     LEXIN_SCREEN_CALENDAR,
     LEXIN_SCREEN_EMOTION,
     LEXIN_SCREEN_SUGGESTION,
+    LEXIN_SCREEN_WIFI,
+    LEXIN_SCREEN_VOICE,
+    LEXIN_SCREEN_PLAN,
 } lexin_screen_id_t;
 
 typedef enum {

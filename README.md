@@ -1,12 +1,13 @@
 # 乐鑫 LeXin ESP32-P4 边缘 AI 桌宠
 
-乐鑫是一套运行在 ESP32-P4 Function EV Board 上的触摸屏边缘 AI 桌宠项目。它把天气、日历、科研/生活建议、触摸交互、专注计时和摄像头情绪识别合并到同一个固件中，重点展示“边缘 AI 本地推理”，而不是只依赖云端问答。
+乐鑫是一套运行在 ESP32-P4 Function EV Board 上的触摸屏边缘 AI 桌宠项目。它把天气、日历、科研/生活建议、触摸交互、专注计时、摄像头情绪识别和语音对话合并到同一个固件中，重点展示“边缘 AI 本地推理”，而不是只依赖云端问答。
 
 项目核心链路：
 
 ```text
 触摸/天气/日历/专注计时 -> ESP-DL 本地量化建议模型 -> LCD 当前建议
 SC2336 摄像头 -> ESP-WHO 本地人脸检测/跟踪 -> LCD 情绪研伴
+ES8311 麦克风 -> 能量门限分段 -> HTTP /voice-stream -> 电脑代理 FunASR/规则/DeepSeek -> LCD 语音回复
 电脑代理 -> 天气/日期/DeepSeek 可选增强 -> LCD 云端建议
 ```
 
@@ -184,6 +185,147 @@ SC2336 摄像头采集画面
 ```
 
 例如频繁点击研伴建议，系统会认为当前注意力可能被打断，更倾向输出“回到学习”“拆分任务”“专注一段时间”等建议；长时间未触摸则更倾向提醒喝水、休息或活动。
+
+## 人脸识别锁屏
+
+开机后自动进入锁屏界面，必须通过人脸识别才能进入主界面。不同用户有独立的
+数据空间（交互次数、专注计时等通过 NVS 保存）。
+
+### 1. 数据流
+
+```text
+SC2336 摄像头 + ESP-WHO 人脸检测
+   -> 定位人脸框并裁剪人脸区域 (RGB565)
+   -> HTTP POST /face-recognize 上传到电脑代理
+   -> 代理用 64-bit 平均哈希 (aHash) 比对已注册用户
+   -> 匹配成功：返回 user_id + user_name
+   -> 匹配失败：提示"未识别到用户"，可创建新账户
+```
+
+### 2. 首次使用 / 注册新用户
+
+1. 开机进入锁屏界面，摄像头自动开始扫描人脸
+2. 人脸出现后进入识别流程
+3. 若为陌生面孔，屏幕显示：
+
+   - 状态：**未识别到用户**
+   - 按钮：**创建新用户**
+4. 点击按钮进入注册页面，用屏幕键盘输入用户名（支持 a-z / 空格 / 删除）
+5. 点击 **确认创建**，板子上传裁剪好的人脸 + 用户名到 `/face-register`
+6. 代理保存人脸哈希 + 用户名到 `tools/face_users.json`
+7. 显示 **注册成功**，自动进入主界面
+
+### 3. 已注册用户
+
+1. 对着摄像头，人脸框出现后自动上传人脸
+2. 匹配成功 → 显示 **欢迎回来，xxx**
+3. 自动加载该用户的历史交互数据（天气/日历/研伴点击次数等）
+4. 进入主界面，左上角显示用户名
+
+### 4. 多用户数据隔离
+
+每个用户在 NVS 中有独立命名空间（`{user_id}_wt` 等 key）。切换用户时：
+
+- 当前用户数据自动保存到 NVS
+- 新用户数据从 NVS 加载（首次为空）
+
+主界面左上角显示当前用户名，表示正在该用户的专属空间中操作。
+
+### 5. 脱网/超时回退
+
+- 人脸识别需要代理（电脑端）运行
+- 若摄像头 8 秒未检测到人脸，自动以 `乐鑫用户` 身份解锁，方便开发调试
+- 已在 NVS 中缓存的用户登录状态会保留到下次开机
+
+### 6. 文件结构
+
+```text
+components/lexin_face_auth/
+  CMakeLists.txt
+  include/lexin_face_auth.h
+  lexin_face_auth.c          # 人脸裁剪 + HTTP POST + 状态机 + NVS 缓存
+tools/lexin_proxy.js          # /face-recognize /face-register /face-users
+tools/face_users.json         # 用户人脸数据库 (自动生成)
+```
+
+## 语音对话（乐鑫乐鑫唤醒）
+
+ESP32-P4 Function EV Board 自带 ES8311 codec + 板载麦克风。固件已经把它接进
+`components/lexin_voice/`，主界面底部新增"语音对话"入口。
+
+### 1. 数据流
+
+```text
+ES8311 麦克风 (16 kHz / mono / 16-bit)
+   -> 板子端 30 ms 帧 + 能量门限 (RMS 阈值)
+   -> 切分一句话（>= 阈值进入录音，< 阈值 900 ms 视为结束）
+   -> 拼装 RIFF/WAVE，上传到电脑代理 /voice-stream
+   -> 代理端 FunASR（或回退规则）做唤醒词 + 识别
+   -> 本地规则 / FAQ 路由，复杂问题（"为什么/怎么/介绍" 等）走 DeepSeek
+   -> 板子收到 JSON，在"语音对话"页显示识别文本 + 回复
+```
+
+### 2. 唤醒词与识别
+
+- 唤醒词：默认 `乐鑫,lexin,lex i n,lexinlexin,乐心`，大小写不敏感。
+  可以在代理启动前用环境变量 `LEXIN_WAKE_KEYWORDS=乐鑫,乐鑫乐鑫` 覆盖。
+- 识别：默认走**回退规则**——板子把 WAV 传到代理，代理立刻视为"已唤醒"，
+  并给一个文字回执，方便在没有安装任何 ASR 模型时先跑通闭环。
+- 想要真实 ASR 时，安装 FunASR 或 Whisper，然后在启动代理前设置：
+  ```powershell
+  $env:LEXIN_ASR_CMD = "python tools/run_funasr.py"
+  $env:LEXIN_ASR_LANG = "zh"
+  ```
+  代理会把 `/tmp/lexin-voice/voice_*.wav` 路径作为最后一个参数传给该命令，
+  并把标准输出当作 `{"text": "..."}` 解析。
+- 想让代理把识别文本发给 DeepSeek（仅在 FAQ 没有命中时）：
+  ```powershell
+  $env:LEXIN_DEEPSEEK_VOICE = "1"
+  ```
+  这会启用代理内置的"问题/解释/总结"等关键词路由。
+
+### 3. 启动顺序
+
+1. 启动代理：`start_demo.bat`，确认日志里有
+   `Voice ASR command: <not configured>, using fallback wake+rules`。
+2. 烧录固件，板子接同一个 Wi-Fi，屏幕底部出现"语音对话 喊 乐鑫乐鑫 即可唤醒"。
+3. 点击 banner 进入语音对话页，看到状态从"待命中 -> 正在听 -> 上传中 ->
+   思考中 -> 已回复"循环。
+4. 对板子喊一次"乐鑫乐鑫"（或随便什么词），停顿约 1 秒，板子会回一句
+   默认话。等 FunASR 接入后，识别文本会显示在"你说"位置，回复会显示在
+   "回复"位置。
+
+### 4. 不依赖真板子的冒烟测试
+
+```powershell
+node tools\test_voice_stream.js
+```
+
+会生成一段 880 Hz 的 800 ms beep 并 POST 到 `http://127.0.0.1:8787/voice-stream`。
+代理回退路径会返回包含 `reply` 字段的 JSON，确认整个 HTTP 链路通。
+
+### 5. 喇叭到位后怎么接
+
+- 输出端用 `bsp_audio_codec_speaker_init()`，参考 BSP 文档初始化 I2S TX 通道。
+- 在 `lexin_voice_reply_dispatch` 后增加一段"把 reply 文本丢进 TTS 队列"。
+  推荐先用 `esp_tts`（组件管理器有）做中文 TTS，再走 `esp_codec_dev_write`
+  播放。等喇叭接好，UI 上"回复"区域可直接念出来。
+- 启用 AFE + AEC（`esp-sr` AFE）后，唤醒检测可以从"能量门限"升级为
+  WakeNet9 / WakeNet9s 离线唤醒，**组件级 API 边界不变**，不影响 UI / 代理。
+
+### 6. 文件结构
+
+```text
+components/lexin_voice/
+  CMakeLists.txt
+  include/lexin_voice.h
+  lexin_voice.c                  # 麦克风采集 + 能量门限 + WAV 上传
+tools/lexin_proxy.js             # /voice-stream 路由 + 回退唤醒/规则/DeepSeek
+tools/test_voice_stream.js       # 不需要板子也能跑的冒烟脚本
+main/lexin_launcher.c            # 新增 LEXIN_SCREEN_VOICE 入口
+main/lexin_main.c                # 启动 lexin_voice
+main/lexin_display_test.c        # "语音对话"页 + 状态 banner
+```
 
 ## 后续开发数据接口
 
@@ -494,7 +636,8 @@ set_deepseek_key.bat
 ```
 
 输入 API Key 后会生成本机忽略文件 `deepseek_config.ps1`，该文件不会提交到仓库。随后重新双击 `start_demo.bat`。窗口出现 `DeepSeek enabled` 表示云端建议可用。
-API Key：sk-7a617334fd4441ee8ca3b2a6c6f5190e
+
+请不要把真实 API Key 写入 README 或提交到 GitHub。
 ## 比赛演示流程
 
 建议按以下顺序展示：

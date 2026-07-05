@@ -197,6 +197,10 @@ typedef struct {
     int16_t score_neutral;
     int16_t score_happy;
     int16_t score_sad;
+    /* Full 7-class FER label from the ESP-DL backend (0..6, canonical order:
+     * neutral/happy/sad/angry/surprise/fear/disgust). */
+    uint8_t fer_label;
+    uint8_t fer_confidence;
     const char *fallback_reason;
 } expression_adapter_status_t;
 

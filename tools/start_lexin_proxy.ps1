@@ -14,6 +14,48 @@ if (Test-Path $DeepSeekConfig) {
     . $DeepSeekConfig
 }
 
+# --- Speech recognition (FunASR) auto-wiring --------------------------
+# If the dedicated ASR venv exists (created by tools/setup_asr.ps1), point
+# the proxy at it so /voice-stream runs real Mandarin recognition instead
+# of the offline fallback. Also warm an always-on ASR daemon so replies
+# come back quickly instead of reloading the model on every utterance.
+$AsrVenvPython = Join-Path $Root ".asr_venv\Scripts\python.exe"
+$AsrScript = Join-Path $Root "tools\asr_funasr.py"
+$AsrDaemonPort = 8799
+if ((Test-Path $AsrVenvPython) -and (Test-Path $AsrScript)) {
+    if ([string]::IsNullOrWhiteSpace($env:LEXIN_ASR_CMD)) {
+        # The proxy splits this on whitespace, so it must be unquoted. The
+        # project path has no spaces; keep it that way.
+        $env:LEXIN_ASR_CMD = "$AsrVenvPython $AsrScript"
+    }
+    if ([string]::IsNullOrWhiteSpace($env:LEXIN_ASR_LANG)) {
+        $env:LEXIN_ASR_LANG = "zh"
+    }
+    Write-Host "Voice ASR: FunASR venv detected -> $AsrVenvPython"
+
+    $daemonUp = $false
+    try {
+        $h = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$AsrDaemonPort/health" -TimeoutSec 2
+        $daemonUp = ($h.StatusCode -eq 200)
+    } catch {
+        $daemonUp = $false
+    }
+    if (-not $daemonUp) {
+        Write-Host "Starting FunASR daemon on 127.0.0.1:$AsrDaemonPort (first load downloads models)..."
+        Start-Process -WindowStyle Hidden -FilePath $AsrVenvPython `
+            -ArgumentList @($AsrScript, "--serve", "--port", "$AsrDaemonPort") `
+            -WorkingDirectory $Root
+    } else {
+        Write-Host "FunASR daemon already running on port $AsrDaemonPort."
+    }
+} else {
+    Write-Host "Voice ASR: .asr_venv not found; run tools/setup_asr.ps1 to enable speech recognition."
+    Write-Host "The proxy still starts, but /voice-stream will report NO_ASR."
+}
+
+# Voice conversation forwards to DeepSeek by default; nothing to set here
+# unless the user wants to force offline rules (LEXIN_DEEPSEEK_VOICE=0).
+
 function Initialize-LogFile {
     param(
         [string]$Path,

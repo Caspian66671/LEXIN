@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -21,10 +22,12 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "bsp/esp32_p4_function_ev_board.h"
+#include "bsp/touch.h"
 #include "lexin_actions.h"
 #include "lexin_interaction.h"
 #include "lexin_launcher.h"
 #include "lexin_triggers.h"
+#include "lexin_wifi.h"
 
 static const char *TAG = "screen_ui";
 
@@ -89,18 +92,92 @@ static lv_obj_t *s_emotion_meta_label;
 static lv_obj_t *s_emotion_system_meta_label;
 static lv_obj_t *s_emotion_response_label;
 static lv_obj_t *s_emotion_online_label;
+static lv_obj_t *s_emotion_capture_status_label;
+static char s_capture_status[64] = "CAPTURE IDLE";
+typedef enum {
+    EMOTION_VIEW_LIVE = 0,
+    EMOTION_VIEW_DAILY,
+    EMOTION_VIEW_MONTHLY,
+} emotion_view_t;
+static emotion_view_t s_emotion_view = EMOTION_VIEW_LIVE;
 static char s_cached_weather[RESULT_CACHE_SIZE];
 static char s_cached_calendar[RESULT_CACHE_SIZE];
 
+#define LEXIN_PLAN_MAX_ITEMS 12
+#define LEXIN_PLAN_ITEM_LEN 48
+static char s_plan_items[LEXIN_PLAN_MAX_ITEMS][LEXIN_PLAN_ITEM_LEN];
+static bool s_plan_done[LEXIN_PLAN_MAX_ITEMS];
+static int s_plan_count;
+static int s_plan_percent;
+static bool s_plan_recording;      /* waiting for a spoken plan */
+static bool s_plan_day_view;       /* plan page is showing a specific day */
+/* Date shown in day view; parsed from the proxy's DATE field so that
+ * toggle/delete on a past day are persisted to that day, not today. */
+static int s_plan_view_year, s_plan_view_month, s_plan_view_day;
+static char s_plan_day_title[24];  /* header text for the day-record view */
+/* Completion percent per day-of-month (1..31). 255 = no plan that day. */
+static uint8_t s_plan_month_percent[32];
+/* Voice conversation state mirrored from the voice component. */
+static lexin_voice_snapshot_t s_voice_snapshot;
+static bool s_voice_snapshot_valid;
+static lv_obj_t *s_voice_status_label;
+static lv_obj_t *s_voice_reply_label;
+static lv_obj_t *s_voice_transcript_label;
+static lv_obj_t *s_voice_state_pill;
+static lv_obj_t *s_voice_meter_label;
+static lv_obj_t *s_voice_backend_label;
+static const char *s_voice_banner_state = "等待唤醒";
+static uint32_t s_voice_last_reply_ms;
+static lexin_wifi_ap_t s_wifi_aps[LEXIN_WIFI_MAX_APS];
+static uint16_t s_wifi_ap_count;
+static int s_wifi_selected = -1;
+static char s_wifi_password[LEXIN_WIFI_PASSWORD_MAX_LEN + 1];
+static char s_wifi_page_status[96] = "Tap Scan to search networks";
+static bool s_wifi_shift;
+static bool s_wifi_symbols;
+static bool s_wifi_show_password;
+
 static void copy_field_value(const char *text, const char *key, char *out, size_t out_size);
+static void copy_field_raw_value(const char *text, const char *key, char *out, size_t out_size);
 static int parse_percent_value(const char *text);
 static int parse_hour_value(const char *time_value);
 static void refresh_pet_combined_tip(void);
 static bool lvgl_show_pet_ai_page(void);
 static bool lvgl_show_suggestion_page(void);
 static bool lvgl_show_emotion_page(void);
+static bool lvgl_show_wifi_page(void);
+static bool lvgl_show_voice_page(void);
+static bool lvgl_show_emotion_report_page(const char *text, bool monthly);
+static void lvgl_refresh_voice_page(void);
+static void lvgl_draw_voice_banner(lv_obj_t *parent, int x, int y, int w, int h);
+static const char *voice_state_cn(lexin_voice_state_t state);
+static uint32_t voice_state_color(lexin_voice_state_t state);
+static const char *voice_backend_text(uint8_t backend);
+static bool handle_wifi_touch(uint16_t x, uint16_t y);
+static bool handle_emotion_touch(uint16_t x, uint16_t y);
+static bool handle_plan_touch(uint16_t x, uint16_t y);
+static bool handle_calendar_touch(uint16_t x, uint16_t y);
+static bool lvgl_show_plan_page(void);
+static void lvgl_draw_plant(lv_obj_t *parent, int x, int y, int w, int h, int percent);
+static void parse_plan_text(const char *text);
+static bool launcher_lock_touch_hit(uint16_t raw_x, uint16_t raw_y);
+static bool refresh_emotion_preview(void);
 static bool lvgl_refresh_emotion_live(const lexin_vision_snapshot_t *snapshot);
 static void update_pet_from_ai_context(void);
+
+static void clear_emotion_live_widget_refs(void)
+{
+    s_emotion_preview_image = NULL;
+    s_emotion_waiting_label = NULL;
+    s_emotion_face_box = NULL;
+    s_emotion_camera_meta_label = NULL;
+    s_emotion_expression_label = NULL;
+    s_emotion_meta_label = NULL;
+    s_emotion_system_meta_label = NULL;
+    s_emotion_response_label = NULL;
+    s_emotion_online_label = NULL;
+    s_emotion_capture_status_label = NULL;
+}
 
 static void lvgl_set_bg(lv_obj_t *obj, uint32_t color)
 {
@@ -207,6 +284,38 @@ static void copy_field_value(const char *text, const char *key, char *out, size_
         if (raw < 0x80) {
             out[i++] = (char)toupper(raw);
         }
+    }
+    while (i > 0 && out[i - 1] == ' ') {
+        i--;
+    }
+    out[i] = '\0';
+    if (i == 0) {
+        snprintf(out, out_size, "UNKNOWN");
+    }
+}
+
+static void copy_field_raw_value(const char *text, const char *key, char *out, size_t out_size)
+{
+    if (out_size == 0) {
+        return;
+    }
+    snprintf(out, out_size, "UNKNOWN");
+    if (text == NULL || key == NULL) {
+        return;
+    }
+
+    const char *p = strstr(text, key);
+    if (p == NULL) {
+        return;
+    }
+    p += strlen(key);
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+
+    size_t i = 0;
+    while (*p != '\0' && *p != '\r' && *p != '\n' && i + 1 < out_size) {
+        out[i++] = *p++;
     }
     while (i > 0 && out[i - 1] == ' ') {
         i--;
@@ -1182,6 +1291,522 @@ static void lvgl_draw_pet_avatar(lv_obj_t *parent, int x, int y)
     lvgl_card(parent, x + 78, y + 62, 12, 7, 0xffb8a8, LV_RADIUS_CIRCLE);
 }
 
+/* ----------------------------------------------------------------- */
+/* Voice conversation UI helpers                                      */
+/* ----------------------------------------------------------------- */
+
+static const char *voice_state_cn(lexin_voice_state_t state)
+{
+    switch (state) {
+    case LEXIN_VOICE_STATE_LISTENING:  return "待命中";
+    case LEXIN_VOICE_STATE_HEARD:      return "正在听";
+    case LEXIN_VOICE_STATE_UPLOADING:  return "上传中";
+    case LEXIN_VOICE_STATE_THINKING:   return "思考中";
+    case LEXIN_VOICE_STATE_REPLY:      return "已回复";
+    case LEXIN_VOICE_STATE_ERROR:      return "异常";
+    case LEXIN_VOICE_STATE_IDLE:
+    default:                           return "等待唤醒";
+    }
+}
+
+static uint32_t voice_state_color(lexin_voice_state_t state)
+{
+    switch (state) {
+    case LEXIN_VOICE_STATE_HEARD:     return 0x42c2a3;
+    case LEXIN_VOICE_STATE_UPLOADING: return 0xff9f22;
+    case LEXIN_VOICE_STATE_THINKING:  return 0x9465ff;
+    case LEXIN_VOICE_STATE_REPLY:     return 0x1c98d2;
+    case LEXIN_VOICE_STATE_ERROR:     return 0xd9534f;
+    case LEXIN_VOICE_STATE_LISTENING:
+    case LEXIN_VOICE_STATE_IDLE:
+    default:                          return 0x71889a;
+    }
+}
+
+static const char *voice_backend_text(uint8_t backend)
+{
+    switch (backend) {
+    case 1: return "本地规则";
+    case 2: return "DeepSeek";
+    default: return "未连接";
+    }
+}
+
+/* ----------------------------------------------------------------- */
+/*  Lock screen (face auth) UI                                        */
+/* ----------------------------------------------------------------- */
+
+static lexin_face_auth_snapshot_t s_lock_snapshot;
+static lv_obj_t *s_lock_preview_image;
+static lv_obj_t *s_lock_status_label;
+static lv_obj_t *s_lock_sub_label;
+static lv_obj_t *s_lock_face_box;
+static lv_obj_t *s_lock_action_btn;
+static lv_obj_t *s_lock_preview_frame;
+static lv_obj_t *s_lock_name_input_label;
+static char s_lock_name_buf[32];
+static int s_lock_name_len;
+static bool s_lock_register_active;
+/* True while the lock screen is the content actually painted on the
+ * display. Used to repaint the launcher exactly once after unlock
+ * instead of on every recognized-face snapshot. */
+static bool s_lock_screen_visible;
+
+static void lock_clear_widget_refs(void)
+{
+    s_lock_preview_image = NULL;
+    s_lock_status_label = NULL;
+    s_lock_sub_label = NULL;
+    s_lock_face_box = NULL;
+    s_lock_action_btn = NULL;
+    s_lock_preview_frame = NULL;
+    s_lock_name_input_label = NULL;
+}
+
+static const char *lock_state_text(lexin_face_auth_state_t state)
+{
+    switch (state) {
+    case LEXIN_FACE_AUTH_SCANNING:    return "Scanning face";
+    case LEXIN_FACE_AUTH_DETECTED:    return "Checking face";
+    case LEXIN_FACE_AUTH_RECOGNIZED:  return "Unlocked";
+    case LEXIN_FACE_AUTH_UNKNOWN:     return "Unknown user";
+    case LEXIN_FACE_AUTH_REGISTERING: return "Registering";
+    case LEXIN_FACE_AUTH_REGISTERED:  return "Registered";
+    case LEXIN_FACE_AUTH_ERROR:       return "Face auth error";
+    case LEXIN_FACE_AUTH_IDLE:
+    default:                          return "Camera starting";
+    }
+}
+
+static const char *lock_state_sub_text(lexin_face_auth_state_t state)
+{
+    switch (state) {
+    case LEXIN_FACE_AUTH_RECOGNIZED:  return "Entering home";
+    case LEXIN_FACE_AUTH_UNKNOWN:     return "Tap Create User to register";
+    case LEXIN_FACE_AUTH_REGISTERING: return "Keep your face in frame";
+    case LEXIN_FACE_AUTH_REGISTERED:  return "Entering home";
+    case LEXIN_FACE_AUTH_ERROR:       return "Check WiFi and proxy";
+    default:                          return "Center your face in the frame";
+    }
+}
+
+static bool lock_has_preview_pixels(void)
+{
+    return s_emotion_preview_pixels != NULL;
+}
+
+static void lock_commit_preview(void)
+{
+    uint16_t *front = s_emotion_preview_pixels;
+    s_emotion_preview_pixels = s_emotion_preview_back_pixels;
+    s_emotion_preview_back_pixels = front;
+    s_emotion_preview_dsc.data = (const uint8_t *)s_emotion_preview_pixels;
+}
+
+static bool lvgl_show_lock_screen(void)
+{
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) return false;
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lock_clear_widget_refs();
+    s_lock_register_active = false;
+    s_lock_screen_visible = true;
+
+    lvgl_set_vertical_gradient(scr, 0x06111c, 0x0b2635);
+    /* Header */
+    lvgl_card(scr, 0, 0, LCD_H_RES, 76, 0x0b3650, 0);
+    lvgl_set_vertical_gradient(lv_obj_get_child(scr, 0), 0x0a2740, 0x086179);
+    lvgl_label(scr, "LEXIN LOCK", 32, 22, &lv_font_montserrat_28, 0xffffff);
+    lvgl_label(scr, "请正对摄像头进行人脸识别", 280, 26, &lexin_cn_20, 0x99f3ff);
+
+    lv_obj_t *header_mask = lvgl_card(scr, 270, 18, 700, 42, 0x0b3650, 0);
+    lv_obj_set_style_bg_opa(header_mask, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(header_mask, 0, 0);
+    lvgl_label(header_mask, "Look at the camera to unlock", 10, 10,
+               &lv_font_montserrat_20, 0x99f3ff);
+
+    lv_obj_t *wifi_btn = lvgl_card(scr, 820, 18, 160, 46, 0xffffff, 23);
+    lv_obj_set_style_bg_opa(wifi_btn, LV_OPA_90, 0);
+    lvgl_card_border(wifi_btn, 0xffffff, 1);
+    lvgl_center_label(wifi_btn, "WiFi", 0, 10, 160, &lv_font_montserrat_20, 0x19afd8);
+
+    /* Camera preview */
+    s_lock_preview_frame = lvgl_card(scr, 310, 104, 404, 330, 0x0c3047, 8);
+    lv_obj_set_style_border_width(s_lock_preview_frame, 2, 0);
+    lv_obj_set_style_border_color(s_lock_preview_frame, lv_color_hex(0x1cc9d5), 0);
+    lvgl_label(s_lock_preview_frame, "FACE ID", 16, 12, &lv_font_montserrat_20, 0xb8f7ff);
+
+    lv_obj_t *inner = lvgl_card(s_lock_preview_frame, 50, 40,
+                                 LEXIN_VISION_PREVIEW_WIDTH + 8,
+                                 LEXIN_VISION_PREVIEW_HEIGHT + 8, 0x061018, 4);
+    lv_obj_set_style_border_width(inner, 2, 0);
+    lv_obj_set_style_border_color(inner, lv_color_hex(0x5cf6ff), 0);
+
+    if (lock_has_preview_pixels()) {
+        lv_obj_t *img = lv_image_create(s_lock_preview_frame);
+        lv_image_set_src(img, &s_emotion_preview_dsc);
+        lv_obj_set_pos(img, 54, 44);
+        s_lock_preview_image = img;
+    }
+    s_lock_face_box = lv_obj_create(s_lock_preview_frame);
+    lv_obj_remove_style_all(s_lock_face_box);
+    lv_obj_set_style_bg_opa(s_lock_face_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_lock_face_box, 3, 0);
+    lv_obj_set_style_border_color(s_lock_face_box, lv_color_hex(0xffe45c), 0);
+    lv_obj_set_style_radius(s_lock_face_box, 4, 0);
+    lv_obj_add_flag(s_lock_face_box, LV_OBJ_FLAG_HIDDEN);
+
+    /* Status area */
+    s_lock_status_label = lvgl_label(scr, "正在初始化摄像头",
+                                      64, 156, &lexin_cn_28, 0xffffff);
+    lvgl_label_width(s_lock_status_label, 220);
+    s_lock_sub_label = lvgl_label(scr, "请耐心等待",
+                                    64, 210, &lexin_cn_20, 0x6fa2b5);
+    lvgl_label_width(s_lock_sub_label, 220);
+    lv_label_set_text(s_lock_status_label, lock_state_text(s_lock_snapshot.state));
+    lv_label_set_text(s_lock_sub_label, lock_state_sub_text(s_lock_snapshot.state));
+
+    /* Action button (hidden until needed) */
+    s_lock_action_btn = lvgl_card(scr, 64, 280, 200, 56, 0x20d9d2, 14);
+    lv_obj_set_style_bg_opa(s_lock_action_btn, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_lock_action_btn, LV_OBJ_FLAG_HIDDEN);
+    lvgl_label(s_lock_action_btn, "创建新用户", 40, 16, &lexin_cn_28, 0x06283a);
+
+    lv_obj_t *action_mask = lvgl_card(s_lock_action_btn, 8, 8, 184, 40, 0x20d9d2, 0);
+    lv_obj_set_style_bg_opa(action_mask, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(action_mask, 0, 0);
+    lvgl_label(action_mask, "Create User", 24, 10, &lv_font_montserrat_20, 0x06283a);
+
+    s_lock_name_len = 0;
+    s_lock_name_buf[0] = 0;
+
+    lvgl_port_unlock();
+    return true;
+}
+
+static void lock_update_face_box(const lexin_face_auth_snapshot_t *s)
+{
+    if (!s_lock_face_box) return;
+    if (!s->face_detected || s->face_w < 8 || s->face_h < 8) {
+        lv_obj_add_flag(s_lock_face_box, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_remove_flag(s_lock_face_box, LV_OBJ_FLAG_HIDDEN);
+    int bx = 54 + s->face_x;
+    int by = 44 + s->face_y;
+    int bw = s->face_w;
+    int bh = s->face_h;
+    /* Clamp */
+    int max_x = 54 + LEXIN_VISION_PREVIEW_WIDTH;
+    int max_y = 44 + LEXIN_VISION_PREVIEW_HEIGHT;
+    if (bx < 54) { bw -= (54 - bx); bx = 54; }
+    if (by < 44) { bh -= (44 - by); by = 44; }
+    if (bx + bw > max_x) bw = max_x - bx;
+    if (by + bh > max_y) bh = max_y - by;
+    if (bw < 12) bw = 12;
+    if (bh < 12) bh = 12;
+    lv_obj_set_pos(s_lock_face_box, bx, by);
+    lv_obj_set_size(s_lock_face_box, bw, bh);
+}
+
+static void lock_show_action_button(const char *label)
+{
+    if (!s_lock_action_btn) return;
+    lv_obj_remove_flag(s_lock_action_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *btn_label = lv_obj_get_child(s_lock_action_btn, 0);
+    if (btn_label) lv_label_set_text(btn_label, label);
+}
+
+static void lock_hide_action_button(void)
+{
+    if (s_lock_action_btn) lv_obj_add_flag(s_lock_action_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
+static const char lock_kb_rows[4][10] = {
+    {'q','w','e','r','t','y','u','i','o','p'},
+    {'a','s','d','f','g','h','j','k','l', 0 },
+    {'z','x','c','v','b','n','m','-','_', 0 },
+    {0},
+};
+
+static bool lvgl_show_register_screen(void)
+{
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) return false;
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lock_clear_widget_refs();
+    s_lock_register_active = true;
+
+    lvgl_set_vertical_gradient(scr, 0xfff5fa, 0xffd9ea);
+    lvgl_card(scr, 0, 0, LCD_H_RES, 76, 0xff4f8a, 0);
+    lvgl_label(scr, "新用户注册", 32, 22, &lexin_cn_28, 0xffffff);
+    lvgl_label(scr, "请输入你的名字", 280, 26, &lexin_cn_20, 0xffd9ea);
+
+    /* Name display */
+    lv_obj_t *name_card = lvgl_glass_card(scr, 64, 106, 896, 60, 16);
+    s_lock_name_input_label = lvgl_label(name_card, s_lock_name_buf[0] ? s_lock_name_buf : "点击键盘输入",
+                                           24, 16, &lexin_cn_28, 0x10283e);
+    lvgl_label_width(s_lock_name_input_label, 840);
+
+    /* Keyboard */
+    lv_obj_t *kb = lvgl_glass_card(scr, 64, 186, 896, 280, 16);
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 10; col++) {
+            char ch = lock_kb_rows[row][col];
+            if (!ch) break;
+            int kx = 30 + col * 85;
+            int ky = 20 + row * 80;
+            lv_obj_t *key = lvgl_card(kb, kx, ky, 74, 60, 0xffffff, 12);
+            lv_obj_set_style_border_width(key, 1, 0);
+            lv_obj_set_style_border_color(key, lv_color_hex(0xdddddd), 0);
+            char txt[2] = {ch, 0};
+            lvgl_label(key, txt, 26, 16, &lv_font_montserrat_28, 0x10283e);
+        }
+    }
+    /* Space bar */
+    lv_obj_t *space = lvgl_card(kb, 170, 260, 340, 50, 0xffffff, 12);
+    lvgl_label(space, "空格", 136, 14, &lexin_cn_20, 0x577489);
+    /* Backspace */
+    lv_obj_t *bs = lvgl_card(kb, 530, 260, 150, 50, 0xffffff, 12);
+    lvgl_label(bs, "删除", 46, 14, &lexin_cn_20, 0xd9534f);
+
+    /* Confirm button */
+    lv_obj_t *confirm = lvgl_card(scr, 350, 488, 300, 64, 0xff4f8a, 18);
+    lv_obj_t *cfm_label = lvgl_label(confirm, "确认创建", 90, 18, &lexin_cn_28, 0xffffff);
+
+    lvgl_port_unlock();
+    return true;
+}
+
+static void lock_handle_register_touch(uint16_t x, uint16_t y)
+{
+    /* Keyboard region: card at x=64, y=186, w=896, h=280 */
+    if (x >= 64 && x < 64 + 896 && y >= 186 && y < 186 + 280) {
+        int col = ((int)x - 64 - 30) / 85;
+        int row = ((int)y - 186 - 20) / 80;
+        if (row >= 0 && row < 3 && col >= 0 && col < 10) {
+            char ch = lock_kb_rows[row][col];
+            if (ch && s_lock_name_len < (int)(sizeof(s_lock_name_buf) - 1)) {
+                s_lock_name_buf[s_lock_name_len++] = ch;
+                s_lock_name_buf[s_lock_name_len] = 0;
+            }
+        }
+        /* Space bar: 170,260,w=340,h=50 in kb coords => abs x=234, y=446 */
+        if ((int)x >= 234 && (int)x < 574 && (int)y >= 446 && (int)y < 496) {
+            if (s_lock_name_len < (int)(sizeof(s_lock_name_buf) - 1)) {
+                s_lock_name_buf[s_lock_name_len++] = ' ';
+                s_lock_name_buf[s_lock_name_len] = 0;
+            }
+        }
+        /* Backspace: 530,260,w=150,h=50 => abs x=594, y=446 */
+        if ((int)x >= 594 && (int)x < 744 && (int)y >= 446 && (int)y < 496) {
+            if (s_lock_name_len > 0) s_lock_name_buf[--s_lock_name_len] = 0;
+        }
+        if (s_lock_name_input_label) {
+            if (lvgl_port_lock(80)) {
+                lv_label_set_text(s_lock_name_input_label,
+                                  s_lock_name_buf[0] ? s_lock_name_buf : "Input user name");
+                lvgl_port_unlock();
+            }
+        }
+    }
+    /* Confirm button: 350,488,w=300,h=64 */
+    if ((int)x >= 350 && (int)x < 650 && (int)y >= 488 && (int)y < 552 && s_lock_name_len > 0) {
+        esp_err_t ret = lexin_face_auth_register(s_lock_name_buf);
+        s_lock_register_active = false;
+        lvgl_show_lock_screen();
+        s_lock_name_len = 0;
+        s_lock_name_buf[0] = 0;
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "face register request failed: %s", esp_err_to_name(ret));
+        }
+    }
+}
+
+void lexin_screen_update_face_auth(const lexin_face_auth_snapshot_t *s)
+{
+    if (!s) return;
+    s_lock_snapshot = *s;
+    bool should_unlock =
+        s->recognized ||
+        s->state == LEXIN_FACE_AUTH_RECOGNIZED ||
+        s->state == LEXIN_FACE_AUTH_REGISTERED;
+
+    if (s_lock_register_active) {
+        if (should_unlock) {
+            s_lock_register_active = false;
+            lexin_screen_show_idle();
+        }
+        return;
+    }
+
+    if (!s_lvgl_ready || !lvgl_port_lock(200)) {
+        /* LVGL is busy (e.g. painting a result page). Never repaint
+         * blindly here: this callback fires for every recognized-face
+         * snapshot, and an unconditional show_idle() would stomp
+         * whatever page is currently being drawn. The next snapshot
+         * (or the unlock path in the main task) will catch up. */
+        return;
+    }
+
+    /* If the launcher is already shown, just keep the active screen.
+     * Keep the LVGL lock held while deciding and redrawing so a touch
+     * that opens another page cannot slip in between. */
+    lexin_screen_id_t cur = lexin_launcher_current_screen();
+    if (lexin_face_auth_is_logged_in()) {
+        /* Repaint the launcher only for the actual unlock transition
+         * (lock screen still painted). Recognized-face snapshots keep
+         * arriving while the user sits in front of the camera; without
+         * this guard every one of them would redraw the launcher. */
+        if (should_unlock && cur == LEXIN_SCREEN_LAUNCHER &&
+            s_lock_screen_visible) {
+            lexin_screen_show_idle();
+        }
+        lvgl_port_unlock();
+        return;
+    }
+    if (cur == LEXIN_SCREEN_WIFI) {
+        if (should_unlock) {
+            lexin_screen_show_idle();
+        }
+        lvgl_port_unlock();
+        return;
+    }
+    if (cur != LEXIN_SCREEN_LAUNCHER && cur != LEXIN_SCREEN_VOICE &&
+        cur != LEXIN_SCREEN_EMOTION) {
+        lvgl_port_unlock();
+        return;
+    }
+
+    /* Lock screen: if still in launcher (not yet unlocked). */
+    if (cur == LEXIN_SCREEN_LAUNCHER && !lexin_face_auth_is_logged_in()) {
+        switch (s->state) {
+        case LEXIN_FACE_AUTH_SCANNING:
+            break;
+        case LEXIN_FACE_AUTH_DETECTED:
+        case LEXIN_FACE_AUTH_RECOGNIZED:
+        case LEXIN_FACE_AUTH_UNKNOWN:
+        case LEXIN_FACE_AUTH_REGISTERED:
+        case LEXIN_FACE_AUTH_ERROR:
+            break;
+        default: break;
+        }
+    }
+
+    /* Refresh preview. The first call allocates the shared preview buffer. */
+    bool preview_ready = refresh_emotion_preview();
+    if (preview_ready && lock_has_preview_pixels()) {
+        lock_commit_preview();
+        if (!s_lock_preview_image && s_lock_preview_frame) {
+            s_lock_preview_image = lv_image_create(s_lock_preview_frame);
+            lv_obj_set_pos(s_lock_preview_image, 54, 44);
+        }
+        if (s_lock_preview_image) {
+            lv_image_set_src(s_lock_preview_image, &s_emotion_preview_dsc);
+            lv_obj_invalidate(s_lock_preview_image);
+        }
+    }
+
+    lock_update_face_box(s);
+
+    /* Status text */
+    const char *status = s->status_text[0] ? s->status_text :
+        (s->state == LEXIN_FACE_AUTH_SCANNING ? "请正对摄像头" :
+         s->state == LEXIN_FACE_AUTH_DETECTED ? "识别中" :
+         s->state == LEXIN_FACE_AUTH_RECOGNIZED ? s->status_text :
+         s->state == LEXIN_FACE_AUTH_UNKNOWN ? "未识别到用户" :
+         s->state == LEXIN_FACE_AUTH_REGISTERING ? "正在注册" :
+         s->state == LEXIN_FACE_AUTH_REGISTERED ? "注册成功" :
+         s->state == LEXIN_FACE_AUTH_ERROR ? "识别失败" : "等待摄像头");
+    if (s_lock_status_label) lv_label_set_text(s_lock_status_label, status);
+    if (s_lock_status_label) lv_label_set_text(s_lock_status_label, lock_state_text(s->state));
+
+    const char *sub = "";
+    switch (s->state) {
+    case LEXIN_FACE_AUTH_RECOGNIZED:
+        sub = s->user_name[0] ? s->user_name : ""; break;
+    case LEXIN_FACE_AUTH_UNKNOWN:
+        sub = "点击下方按钮创建新账户"; break;
+    case LEXIN_FACE_AUTH_REGISTERING:
+        sub = "请稍候"; break;
+    case LEXIN_FACE_AUTH_REGISTERED:
+        sub = "即将进入主界面"; break;
+    case LEXIN_FACE_AUTH_ERROR:
+        sub = "请检查代理连接"; break;
+    default: sub = "将人脸置于框内"; break;
+    }
+    if (s_lock_sub_label) {
+        if (s->state == LEXIN_FACE_AUTH_RECOGNIZED) {
+            char wb[96]; snprintf(wb, sizeof(wb), "欢迎回来，%s", sub);
+            lv_label_set_text(s_lock_sub_label, wb);
+        } else {
+            lv_label_set_text(s_lock_sub_label, sub);
+        }
+    }
+
+    if (s_lock_sub_label) {
+        if (s->state == LEXIN_FACE_AUTH_RECOGNIZED) {
+            char wb[96];
+            snprintf(wb, sizeof(wb), "Welcome %s",
+                     s->user_name[0] ? s->user_name : "back");
+            lv_label_set_text(s_lock_sub_label, wb);
+        } else {
+            lv_label_set_text(s_lock_sub_label, lock_state_sub_text(s->state));
+        }
+    }
+
+    /* Action button */
+    if (s->state == LEXIN_FACE_AUTH_UNKNOWN) {
+        lock_show_action_button("创建新用户");
+    } else if (s->state == LEXIN_FACE_AUTH_REGISTERED ||
+               s->state == LEXIN_FACE_AUTH_RECOGNIZED) {
+        lock_hide_action_button();
+    } else {
+        lock_hide_action_button();
+    }
+
+    if (should_unlock) {
+        lexin_screen_show_idle();
+    }
+    lvgl_port_unlock();
+}
+
+/* Compact banner shown on the launcher. The banner is a tappable
+ * card that opens the voice conversation screen. */
+static void lvgl_draw_voice_banner(lv_obj_t *parent, int x, int y, int w, int h)
+{
+    lv_obj_t *banner = lvgl_glass_card(parent, x, y, w, h, 20);
+    lv_obj_set_style_bg_color(banner, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_bg_opa(banner, LV_OPA_90, 0);
+    lvgl_card_border(banner, 0xffa8d8, 2);
+
+    /* Mic icon: rounded square with a vertical stem and a base. */
+    lv_obj_t *mic = lvgl_card(banner, 18, 14, 30, 30, 0xff4f8a, 8);
+    lvgl_card(mic, 11, 4, 8, 14, 0xffffff, 4);
+    lvgl_card(mic, 5, 14, 20, 4, 0xffffff, 2);
+    lvgl_card(mic, 13, 22, 4, 6, 0xffffff, 1);
+
+    lvgl_label(banner, "语音对话  喊 乐鑫乐鑫 即可唤醒", 64, 12, &lexin_cn_20, 0x10283e);
+    lvgl_label(banner, "本地麦克风采集   上传电脑 ASR + DeepSeek", 64, 36, &lexin_cn_20, 0x577489);
+
+    lv_obj_t *text_mask = lvgl_card(banner, 58, 8, w - 232, 48, 0xffffff, 0);
+    lv_obj_set_style_bg_opa(text_mask, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(text_mask, 0, 0);
+    lvgl_label(text_mask, "语音对话  喊 乐鑫乐鑫 即可唤醒", 6, 2,
+               &lexin_cn_20, 0x10283e);
+    lvgl_label(text_mask, "本地麦克风采集  上传电脑 ASR + DeepSeek", 6, 26,
+               &lexin_cn_20, 0x577489);
+
+    /* State pill on the right edge. */
+    lv_obj_t *pill = lvgl_card(banner, w - 158, 16, 142, 28, 0xfff0f6, 14);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(pill, 1, 0);
+    lv_obj_set_style_border_color(pill, lv_color_hex(0xff4f8a), 0);
+    lv_obj_t *state = lvgl_label(pill, s_voice_banner_state, 12, 6,
+                                 &lexin_cn_20, 0xff4f8a);
+    lvgl_label_width(state, 118);
+}
+
 static void lvgl_init_display(void)
 {
     if (s_panel == NULL || s_lvgl_ready) {
@@ -1201,7 +1826,7 @@ static void lvgl_init_display(void)
         .color_format = LV_COLOR_FORMAT_RGB888,
         .rotation = {
             .swap_xy = false,
-            .mirror_x = false,
+            .mirror_x = true,
             .mirror_y = false,
         },
         .flags = {
@@ -1220,22 +1845,433 @@ static void lvgl_init_display(void)
     }
 }
 
-static bool lvgl_show_launcher(void)
+static bool wifi_hit(uint16_t x, uint16_t y, int rx, int ry, int rw, int rh)
+{
+    return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+}
+
+/* Hit boxes are aligned to the drawn buttons (Lock card x=650..790,
+ * WiFi card x=820..980) and must not overlap, otherwise a tap that lands
+ * near the shared edge — or drifts a few pixels due to touch calibration —
+ * can trigger the wrong action (e.g. Lock opening the WiFi page). The two
+ * regions meet at x=800, which sits in the gap between the buttons. */
+static bool launcher_wifi_touch_hit(uint16_t raw_x, uint16_t raw_y)
+{
+    return wifi_hit(raw_x, raw_y, 800, 0, 224, 96);
+}
+
+static bool launcher_lock_touch_hit(uint16_t raw_x, uint16_t raw_y)
+{
+    return wifi_hit(raw_x, raw_y, 620, 0, 180, 96);
+}
+
+static bool lock_wifi_touch_hit(uint16_t raw_x, uint16_t raw_y)
+{
+    return wifi_hit(raw_x, raw_y, 700, 0, 324, 96);
+}
+
+static bool handle_emotion_touch(uint16_t x, uint16_t y)
+{
+    if (s_emotion_view != EMOTION_VIEW_LIVE) {
+        if (wifi_hit(x, y, 0, 0, 180, 96) || wifi_hit(x, y, 844, 0, 180, 96)) {
+            ESP_LOGI(TAG, "emotion report -> live page");
+            lvgl_show_emotion_page();
+            return true;
+        }
+        return true;
+    }
+
+    if (wifi_hit(x, y, 800, 352, 172, 34)) {
+        ESP_LOGI(TAG, "touch x=%u y=%u -> capture board camera frame", x, y);
+        lexin_screen_set_capture_status("CAPTURE QUEUED");
+        lexin_request_board_capture();
+        return true;
+    }
+    if (wifi_hit(x, y, 800, 390, 80, 34)) {
+        ESP_LOGI(TAG, "touch x=%u y=%u -> daily emotion report", x, y);
+        lexin_request_emotion_report(false);
+        return true;
+    }
+    if (wifi_hit(x, y, 892, 390, 80, 34)) {
+        ESP_LOGI(TAG, "touch x=%u y=%u -> monthly emotion report", x, y);
+        lexin_request_emotion_report(true);
+        return true;
+    }
+    return false;
+}
+
+static void wifi_password_append(char c)
+{
+    size_t len = strlen(s_wifi_password);
+    if (len + 1 >= sizeof(s_wifi_password)) {
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Password is full");
+        return;
+    }
+    s_wifi_password[len] = c;
+    s_wifi_password[len + 1] = '\0';
+}
+
+static void wifi_password_backspace(void)
+{
+    size_t len = strlen(s_wifi_password);
+    if (len > 0) {
+        s_wifi_password[len - 1] = '\0';
+    }
+}
+
+static bool wifi_load_saved_password_for_selected(void)
+{
+    if (s_wifi_selected < 0 || s_wifi_selected >= s_wifi_ap_count) {
+        s_wifi_password[0] = '\0';
+        return false;
+    }
+
+    bool loaded = lexin_wifi_get_saved_password(s_wifi_aps[s_wifi_selected].ssid,
+                                                s_wifi_password,
+                                                sizeof(s_wifi_password));
+    if (loaded) {
+        s_wifi_show_password = true;
+        return true;
+    }
+
+    s_wifi_password[0] = '\0';
+    s_wifi_show_password = false;
+    return false;
+}
+
+static bool wifi_select_first_saved_ap(void)
+{
+    for (uint16_t i = 0; i < s_wifi_ap_count; i++) {
+        s_wifi_selected = i;
+        if (wifi_load_saved_password_for_selected()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void wifi_draw_key_row(lv_obj_t *parent, const char *keys, int x, int y, bool letters)
+{
+    for (size_t i = 0; keys[i] != '\0'; i++) {
+        char label[2] = {keys[i], '\0'};
+        if (letters && s_wifi_shift) {
+            label[0] = (char)toupper((unsigned char)label[0]);
+        }
+        lv_obj_t *key = lvgl_card(parent, x + (int)i * 46, y, 40, 36, 0xffffff, 10);
+        lvgl_card_border(key, 0xd7e8f2, 1);
+        lvgl_center_label(key, label, 0, 8, 40, &lv_font_montserrat_20, 0x17364a);
+    }
+}
+
+static bool wifi_try_key_row(uint16_t x, uint16_t y, const char *keys, int row_x, int row_y, bool letters)
+{
+    for (size_t i = 0; keys[i] != '\0'; i++) {
+        int key_x = row_x + (int)i * 46;
+        if (wifi_hit(x, y, key_x, row_y, 40, 36)) {
+            char value = keys[i];
+            if (letters && s_wifi_shift) {
+                value = (char)toupper((unsigned char)value);
+            }
+            wifi_password_append(value);
+            snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Enter password");
+            lvgl_show_wifi_page();
+            return true;
+        }
+    }
+    return false;
+}
+
+static void wifi_start_scan(void)
+{
+    snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Scanning...");
+    lvgl_show_wifi_page();
+
+    uint16_t count = LEXIN_WIFI_MAX_APS;
+    esp_err_t err = lexin_wifi_scan(s_wifi_aps, &count);
+    s_wifi_ap_count = err == ESP_OK ? count : 0;
+    if (err == ESP_OK) {
+        s_wifi_selected = -1;
+        bool saved_loaded = wifi_select_first_saved_ap();
+        if (!saved_loaded && count > 0) {
+            s_wifi_selected = 0;
+            s_wifi_password[0] = '\0';
+            s_wifi_show_password = false;
+        }
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "%s",
+                 saved_loaded ? "Saved password loaded" :
+                 (count > 0 ? "Select network and enter password" : "No networks found"));
+    } else {
+        s_wifi_selected = -1;
+        s_wifi_password[0] = '\0';
+        s_wifi_show_password = false;
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Scan failed: %s", esp_err_to_name(err));
+    }
+    lvgl_show_wifi_page();
+}
+
+static void wifi_start_connect(void)
+{
+    if (s_wifi_selected < 0 || s_wifi_selected >= s_wifi_ap_count) {
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Select a network first");
+        lvgl_show_wifi_page();
+        return;
+    }
+
+    snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Connecting to %s",
+             s_wifi_aps[s_wifi_selected].ssid);
+    lvgl_show_wifi_page();
+    esp_err_t err = lexin_wifi_connect_ap(&s_wifi_aps[s_wifi_selected], s_wifi_password);
+    if (err != ESP_OK) {
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "Connect failed: %s", esp_err_to_name(err));
+        lvgl_show_wifi_page();
+        return;
+    }
+
+    for (int i = 0; i < 30; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        const char *status = lexin_wifi_status_text();
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "%s", status);
+        lvgl_show_wifi_page();
+        if (lexin_wifi_is_connected()) {
+            esp_err_t save_err = lexin_wifi_save_password(s_wifi_aps[s_wifi_selected].ssid,
+                                                          s_wifi_password);
+            snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "%s",
+                     save_err == ESP_OK ? "Connected, password saved" : "Connected, save failed");
+            lvgl_show_wifi_page();
+            break;
+        }
+        if (strstr(status, "failed") != NULL ||
+            strstr(status, "mismatch") != NULL ||
+            strstr(status, "weak") != NULL ||
+            strstr(status, "No AP") != NULL ||
+            strstr(status, "timeout") != NULL) {
+            break;
+        }
+    }
+    const char *final_status = lexin_wifi_status_text();
+    if (!lexin_wifi_is_connected() &&
+        (strcmp(final_status, "Connecting...") == 0 ||
+         strcmp(final_status, "Reconnecting...") == 0 ||
+         strcmp(final_status, "Waiting IP...") == 0)) {
+        snprintf(s_wifi_page_status, sizeof(s_wifi_page_status),
+                 "Connect timeout, check password");
+        lvgl_show_wifi_page();
+    }
+}
+
+static bool lvgl_show_wifi_page(void)
 {
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(LEXIN_SCREEN_WIFI);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
+    lvgl_set_vertical_gradient(scr, 0xf3fbff, 0xd7f2ff);
+    lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0x167ca7, 0);
+    lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 86, 0x80d9ee, 0), LV_OPA_40, 0);
+    lvgl_label(scr, "Back", 32, 28, &lv_font_montserrat_20, 0xffffff);
+    lvgl_label(scr, "WiFi Setup", 132, 22, &lv_font_montserrat_28, 0xffffff);
+    lvgl_label(scr, lexin_wifi_is_connected() ? "Connected" : lexin_wifi_status_text(),
+               612, 30, &lv_font_montserrat_20, 0xffffff);
+    lv_obj_t *scan_btn = lvgl_card(scr, 830, 22, 138, 42, 0xffffff, 21);
+    lv_obj_set_style_bg_opa(scan_btn, LV_OPA_90, 0);
+    lvgl_center_label(scan_btn, "Scan", 0, 10, 138, &lv_font_montserrat_20, 0x167ca7);
+
+    lv_obj_t *left = lvgl_glass_card(scr, 42, 112, 430, 430, 24);
+    lvgl_label(left, "Networks", 24, 22, &lv_font_montserrat_28, 0x10283e);
+    lvgl_label(left, s_wifi_page_status, 24, 58, &lv_font_montserrat_20, 0x557387);
+    if (s_wifi_ap_count == 0) {
+        lvgl_label(left, "Tap Scan to list nearby WiFi.", 28, 150, &lv_font_montserrat_20, 0x557387);
+    }
+    uint16_t visible = s_wifi_ap_count < 6 ? s_wifi_ap_count : 6;
+    for (uint16_t i = 0; i < visible; i++) {
+        bool selected = (int)i == s_wifi_selected;
+        lv_obj_t *row = lvgl_card(left, 24, 92 + (int)i * 56, 382, 48,
+                                  selected ? 0x19afd8 : 0xffffff, 14);
+        lv_obj_set_style_bg_opa(row, selected ? LV_OPA_COVER : LV_OPA_80, 0);
+        lvgl_card_border(row, selected ? 0x19afd8 : 0xd7e8f2, 1);
+        lv_obj_t *ssid = lvgl_label(row, s_wifi_aps[i].ssid, 16, 8,
+                                    &lv_font_montserrat_20, selected ? 0xffffff : 0x17364a);
+        lvgl_label_width(ssid, 260);
+        char meta[32];
+        snprintf(meta, sizeof(meta), "%ddBm %s", s_wifi_aps[i].rssi,
+                 s_wifi_aps[i].authmode == 0 ? "OPEN" : "LOCK");
+        lvgl_label(row, meta, 280, 13, &lv_font_montserrat_14,
+                   selected ? 0xe9f8ff : 0x557387);
+    }
+
+    lv_obj_t *right = lvgl_glass_card(scr, 500, 112, 480, 430, 24);
+    lvgl_label(right, "Password", 24, 22, &lv_font_montserrat_28, 0x10283e);
+    lvgl_label(right, s_wifi_selected >= 0 ? s_wifi_aps[s_wifi_selected].ssid : "No network selected",
+               208, 30, &lv_font_montserrat_20, 0x557387);
+    lv_obj_t *field = lvgl_card(right, 24, 66, 432, 46, 0xffffff, 14);
+    lvgl_card_border(field, 0xc6e0ed, 1);
+    char password_view[LEXIN_WIFI_PASSWORD_MAX_LEN + 1];
+    size_t pass_len = strlen(s_wifi_password);
+    if (pass_len == 0) {
+        snprintf(password_view, sizeof(password_view), "Enter password");
+    } else if (s_wifi_show_password) {
+        snprintf(password_view, sizeof(password_view), "%s", s_wifi_password);
+    } else {
+        for (size_t i = 0; i < pass_len && i < sizeof(password_view) - 1; i++) {
+            password_view[i] = '*';
+        }
+        password_view[pass_len < sizeof(password_view) ? pass_len : sizeof(password_view) - 1] = '\0';
+    }
+    lv_obj_t *pass_label = lvgl_label(field, password_view, 16, 12, &lv_font_montserrat_20, 0x17364a);
+    lvgl_label_width(pass_label, 396);
+
+    if (s_wifi_symbols) {
+        wifi_draw_key_row(right, "1234567890", 22, 136, false);
+        wifi_draw_key_row(right, "!@#$%^&*()", 22, 182, false);
+        wifi_draw_key_row(right, "-_=+[]{}", 68, 228, false);
+        wifi_draw_key_row(right, ".,?:;/+", 91, 274, false);
+    } else {
+        wifi_draw_key_row(right, "1234567890", 22, 136, false);
+        wifi_draw_key_row(right, "qwertyuiop", 22, 182, true);
+        wifi_draw_key_row(right, "asdfghjkl", 45, 228, true);
+        wifi_draw_key_row(right, "zxcvbnm", 91, 274, true);
+    }
+
+    lv_obj_t *shift = lvgl_card(right, 24, 322, 72, 36, s_wifi_shift ? 0x19afd8 : 0xffffff, 12);
+    lvgl_card_border(shift, 0xc6e0ed, 1);
+    lvgl_center_label(shift, s_wifi_shift ? "ABC" : "abc", 0, 8, 72, &lv_font_montserrat_20,
+                      s_wifi_shift ? 0xffffff : 0x17364a);
+    lv_obj_t *sym = lvgl_card(right, 104, 322, 72, 36, s_wifi_symbols ? 0x19afd8 : 0xffffff, 12);
+    lvgl_card_border(sym, 0xc6e0ed, 1);
+    lvgl_center_label(sym, "SYM", 0, 8, 72, &lv_font_montserrat_20,
+                      s_wifi_symbols ? 0xffffff : 0x17364a);
+    lv_obj_t *del = lvgl_card(right, 184, 322, 72, 36, 0xffffff, 12);
+    lvgl_card_border(del, 0xc6e0ed, 1);
+    lvgl_center_label(del, "DEL", 0, 8, 72, &lv_font_montserrat_20, 0x17364a);
+    lv_obj_t *clear = lvgl_card(right, 264, 322, 72, 36, 0xffffff, 12);
+    lvgl_card_border(clear, 0xc6e0ed, 1);
+    lvgl_center_label(clear, "CLR", 0, 8, 72, &lv_font_montserrat_20, 0x17364a);
+    lv_obj_t *show = lvgl_card(right, 344, 322, 88, 36, s_wifi_show_password ? 0x19afd8 : 0xffffff, 12);
+    lvgl_card_border(show, 0xc6e0ed, 1);
+    lvgl_center_label(show, s_wifi_show_password ? "HIDE" : "SHOW", 0, 8, 88, &lv_font_montserrat_20,
+                      s_wifi_show_password ? 0xffffff : 0x17364a);
+
+    lv_obj_t *connect = lvgl_card(right, 24, 372, 432, 42, 0x167ca7, 21);
+    lvgl_center_label(connect, "Connect", 0, 10, 432, &lv_font_montserrat_20, 0xffffff);
+
+    lvgl_port_unlock();
+    return true;
+}
+
+static bool handle_wifi_touch(uint16_t x, uint16_t y)
+{
+    if (wifi_hit(x, y, 0, 0, 180, 86)) {
+        lexin_screen_show_idle();
+        return true;
+    }
+    if (wifi_hit(x, y, 830, 22, 138, 42)) {
+        wifi_start_scan();
+        return true;
+    }
+
+    for (uint16_t i = 0; i < s_wifi_ap_count && i < 6; i++) {
+        if (wifi_hit(x, y, 66, 204 + (int)i * 56, 382, 48)) {
+            s_wifi_selected = i;
+            bool saved_loaded = wifi_load_saved_password_for_selected();
+            snprintf(s_wifi_page_status, sizeof(s_wifi_page_status), "%s",
+                     saved_loaded ? "Saved password loaded" : "Enter password");
+            lvgl_show_wifi_page();
+            return true;
+        }
+    }
+
+    const int right_x = 500;
+    const int key_base_x = right_x + 22;
+    if (s_wifi_symbols) {
+        if (wifi_try_key_row(x, y, "1234567890", key_base_x, 248, false) ||
+            wifi_try_key_row(x, y, "!@#$%^&*()", key_base_x, 294, false) ||
+            wifi_try_key_row(x, y, "-_=+[]{}", right_x + 68, 340, false) ||
+            wifi_try_key_row(x, y, ".,?:;/+", right_x + 91, 386, false)) {
+            return true;
+        }
+    } else {
+        if (wifi_try_key_row(x, y, "1234567890", key_base_x, 248, false) ||
+            wifi_try_key_row(x, y, "qwertyuiop", key_base_x, 294, true) ||
+            wifi_try_key_row(x, y, "asdfghjkl", right_x + 45, 340, true) ||
+            wifi_try_key_row(x, y, "zxcvbnm", right_x + 91, 386, true)) {
+            return true;
+        }
+    }
+
+    if (wifi_hit(x, y, right_x + 24, 434, 72, 36)) {
+        s_wifi_shift = !s_wifi_shift;
+        lvgl_show_wifi_page();
+        return true;
+    } else if (wifi_hit(x, y, right_x + 104, 434, 72, 36)) {
+        s_wifi_symbols = !s_wifi_symbols;
+        lvgl_show_wifi_page();
+        return true;
+    } else if (wifi_hit(x, y, right_x + 184, 434, 72, 36)) {
+        wifi_password_backspace();
+        lvgl_show_wifi_page();
+        return true;
+    } else if (wifi_hit(x, y, right_x + 264, 434, 72, 36)) {
+        s_wifi_password[0] = '\0';
+        lvgl_show_wifi_page();
+        return true;
+    } else if (wifi_hit(x, y, right_x + 344, 434, 88, 36)) {
+        s_wifi_show_password = !s_wifi_show_password;
+        lvgl_show_wifi_page();
+        return true;
+    } else if (wifi_hit(x, y, right_x + 24, 484, 432, 42)) {
+        wifi_start_connect();
+        return true;
+    }
+    return false;
+}
+
+static bool lvgl_show_launcher(void)
+{
+    /* The lock screen is painted while the launcher screen-state stays
+     * LEXIN_SCREEN_LAUNCHER, so background status callbacks (voice banner
+     * updates etc.) that repaint the launcher "in place" would stomp the
+     * lock screen and make the device look unlocked while it is not.
+     * Never render the launcher for a logged-out user. */
+    if (!lexin_face_auth_is_logged_in()) {
+        ESP_LOGI(TAG, "render launcher suppressed: locked");
+        return false;
+    }
+    ESP_LOGI(TAG, "render launcher");
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
+        return false;
+    }
+    lexin_launcher_show_launcher();
+
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lock_clear_widget_refs();
+    s_lock_register_active = false;
+    s_lock_screen_visible = false;
     lvgl_set_vertical_gradient(scr, 0xe7f7ff, 0xc7f0ff);
     lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0x19afd8, 0);
     lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 102, 0x8fe2f5, 0), LV_OPA_40, 0);
     lvgl_label(scr, "LeXin", 48, 22, &lv_font_montserrat_28, 0xffffff);
     lvgl_label(scr, "AI桌宠", 140, 22, &lexin_cn_28, 0xffffff);
 
+    lv_obj_t *wifi_btn = lvgl_card(scr, 820, 20, 160, 46, 0xffffff, 23);
+    lv_obj_set_style_bg_opa(wifi_btn, LV_OPA_90, 0);
+    lvgl_card_border(wifi_btn, 0xffffff, 1);
+    lvgl_center_label(wifi_btn, "WiFi", 0, 10, 160, &lv_font_montserrat_20, 0x19afd8);
+
+    lv_obj_t *lock_btn = lvgl_card(scr, 650, 20, 140, 46, 0xffffff, 23);
+    lv_obj_set_style_bg_opa(lock_btn, LV_OPA_90, 0);
+    lvgl_card_border(lock_btn, 0xffffff, 1);
+    lvgl_center_label(lock_btn, "Lock", 0, 10, 140, &lv_font_montserrat_20, 0x19afd8);
+
     lv_obj_t *pet_card = lvgl_glass_card(scr, 66, 132, 348, 344, 28);
-    lvgl_label(pet_card, "小伙伴在线", 32, 30, &lexin_cn_28, 0x10283e);
+    const char *user_label = lexin_face_auth_current_user_name();
+    char user_title[48];
+    snprintf(user_title, sizeof(user_title), "%s 在线",
+             user_label ? user_label : "乐鑫");
+    lvgl_label(pet_card, user_title, 32, 30, &lexin_cn_28, 0x10283e);
     lvgl_card(pet_card, 266, 42, 10, 10, 0x2ecc71, LV_RADIUS_CIRCLE);
     lvgl_label(pet_card, "在线", 284, 35, &lexin_cn_20, 0x2c8f57);
     lvgl_label(pet_card, "今日陪伴", 34, 88, &lexin_cn_20, 0x577489);
@@ -1273,15 +2309,21 @@ static bool lvgl_show_launcher(void)
     lvgl_center_label(panel, "研伴", 362, 170, 104, &lexin_cn_20, 0x10283e);
     lvgl_center_label(panel, "天气  日历  情绪识别  双模型研伴", 0, 270, 486, &lexin_cn_20, 0x577489);
 
+    /* Voice banner sits below the app panel. Coordinates mirror the
+     * launcher_app_t entry in lexin_launcher.c so taps map 1:1. */
+    lvgl_draw_voice_banner(scr, 66, 494, 892, 60);
+
     lvgl_port_unlock();
     return true;
 }
 
 static bool lvgl_show_suggestion_page(void)
 {
+    ESP_LOGI(TAG, "render suggestion");
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(LEXIN_SCREEN_SUGGESTION);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
@@ -1320,18 +2362,21 @@ static bool lvgl_show_suggestion_page(void)
 
 static const char *vision_expression_text(const lexin_vision_snapshot_t *snapshot)
 {
-    switch (snapshot->emotion) {
-    case LEXIN_VISION_EMOTION_HAPPY:
+    /* Neural 5-mood (temporal-voted) from the FER model. */
+    switch (snapshot->mood) {
+    case LEXIN_VISION_MOOD_HAPPY:
         return "HAPPY";
-    case LEXIN_VISION_EMOTION_LONELY:
-        return "LONELY";
-    case LEXIN_VISION_EMOTION_ALERT:
-        return "ALERT";
-    case LEXIN_VISION_EMOTION_SLEEPY:
-        return "SLEEPY";
-    case LEXIN_VISION_EMOTION_CALM:
+    case LEXIN_VISION_MOOD_TIRED:
+        return "TIRED";
+    case LEXIN_VISION_MOOD_STRESSED:
+        return "STRESSED";
+    case LEXIN_VISION_MOOD_SURPRISED:
+        return "SURPRISED";
+    case LEXIN_VISION_MOOD_AWAY:
+        return "AWAY";
+    case LEXIN_VISION_MOOD_FOCUSED:
     default:
-        return "CALM";
+        return "FOCUSED";
     }
 
 #if 0
@@ -1354,15 +2399,20 @@ static const char *vision_expression_text(const lexin_vision_snapshot_t *snapsho
 
 static uint32_t vision_expression_accent(const lexin_vision_snapshot_t *snapshot)
 {
-    switch (snapshot->emotion) {
-    case LEXIN_VISION_EMOTION_HAPPY:
-        return 0x20a56b;
-    case LEXIN_VISION_EMOTION_ALERT:
-        return 0x6f6bd9;
-    case LEXIN_VISION_EMOTION_CALM:
-        return 0x1c98d2;
+    switch (snapshot->mood) {
+    case LEXIN_VISION_MOOD_HAPPY:
+        return 0x20a56b;  /* green */
+    case LEXIN_VISION_MOOD_STRESSED:
+        return 0xd9534f;  /* red */
+    case LEXIN_VISION_MOOD_TIRED:
+        return 0x8a6fd9;  /* purple */
+    case LEXIN_VISION_MOOD_SURPRISED:
+        return 0xe0a030;  /* amber */
+    case LEXIN_VISION_MOOD_FOCUSED:
+        return 0x1c98d2;  /* blue */
+    case LEXIN_VISION_MOOD_AWAY:
     default:
-        return 0x71889a;
+        return 0x71889a;  /* grey */
     }
 }
 
@@ -1465,7 +2515,8 @@ static void lvgl_update_face_box(lv_obj_t *box,
 
 static bool lvgl_refresh_emotion_live(const lexin_vision_snapshot_t *snapshot)
 {
-    if (!snapshot || lexin_launcher_current_screen() != LEXIN_SCREEN_EMOTION) {
+    if (!snapshot || lexin_launcher_current_screen() != LEXIN_SCREEN_EMOTION ||
+        s_emotion_view != EMOTION_VIEW_LIVE) {
         return false;
     }
 
@@ -1514,6 +2565,9 @@ static bool lvgl_refresh_emotion_live(const lexin_vision_snapshot_t *snapshot)
     lv_label_set_text(s_emotion_system_meta_label, text);
     lv_label_set_text(s_emotion_online_label,
                       snapshot->service_ready ? "AI ONLINE" : "AI STARTING");
+    if (s_emotion_capture_status_label) {
+        lv_label_set_text(s_emotion_capture_status_label, s_capture_status);
+    }
 
     lv_label_set_text(s_emotion_response_label, vision_response_text(snapshot));
 
@@ -1529,21 +2583,15 @@ static bool lvgl_show_emotion_page(void)
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(LEXIN_SCREEN_EMOTION);
+    s_emotion_view = EMOTION_VIEW_LIVE;
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
     if (preview_ready) {
         lvgl_commit_emotion_preview();
     }
-    s_emotion_preview_image = NULL;
-    s_emotion_waiting_label = NULL;
-    s_emotion_face_box = NULL;
-    s_emotion_camera_meta_label = NULL;
-    s_emotion_expression_label = NULL;
-    s_emotion_meta_label = NULL;
-    s_emotion_system_meta_label = NULL;
-    s_emotion_response_label = NULL;
-    s_emotion_online_label = NULL;
+    clear_emotion_live_widget_refs();
     lvgl_set_vertical_gradient(scr, 0x06111c, 0x0b2635);
     lv_obj_t *header = lvgl_card(scr, 0, 0, LCD_H_RES, 82, 0x0b3650, 0);
     lvgl_set_vertical_gradient(header, 0x0a2740, 0x086179);
@@ -1624,9 +2672,24 @@ static bool lvgl_show_emotion_page(void)
              snapshot.camera_ready ? "OK" : "WAIT",
              snapshot.backend == LEXIN_VISION_BACKEND_ESP_WHO ? "WHO OK" : "WAIT",
              snapshot.service_ready ? "READY" : "WAIT");
-    s_emotion_system_meta_label = lvgl_label(system_card, system_meta, 18, 64,
+    s_emotion_system_meta_label = lvgl_label(system_card, system_meta, 18, 48,
                                              &lv_font_montserrat_20, 0x8deaf3);
     lvgl_label_width(s_emotion_system_meta_label, 184);
+    s_emotion_capture_status_label = lvgl_label(system_card, s_capture_status, 18, 220,
+                                                &lv_font_montserrat_20, 0x8deaf3);
+    lvgl_label_width(s_emotion_capture_status_label, 184);
+    lv_obj_t *capture_btn = lvgl_card(system_card, 24, 250, 172, 34, 0x20d9d2, 8);
+    lv_obj_set_style_bg_opa(capture_btn, LV_OPA_COVER, 0);
+    lvgl_center_label(capture_btn, "CAPTURE", 0, 7, 172,
+                      &lv_font_montserrat_20, 0x06283a);
+    lv_obj_t *today_btn = lvgl_card(system_card, 24, 288, 80, 34, 0xffffff, 8);
+    lvgl_card_border(today_btn, 0x20d9d2, 2);
+    lvgl_center_label(today_btn, "TODAY", 0, 7, 80,
+                      &lv_font_montserrat_20, 0x0b3650);
+    lv_obj_t *month_btn = lvgl_card(system_card, 116, 288, 80, 34, 0xffffff, 8);
+    lvgl_card_border(month_btn, 0x20d9d2, 2);
+    lvgl_center_label(month_btn, "MONTH", 0, 7, 80,
+                      &lv_font_montserrat_20, 0x0b3650);
 
     lv_obj_t *response = lvgl_card(scr, 28, 452, 968, 116, 0x0b3048, 8);
     lv_obj_set_style_border_width(response, 2, 0);
@@ -1640,11 +2703,339 @@ static bool lvgl_show_emotion_page(void)
     return true;
 }
 
-static bool lvgl_show_pet_ai_page(void)
+static int emotion_parse_scores(const char *text, int *scores, int max_scores)
+{
+    if (!text || !scores || max_scores <= 0) {
+        return 0;
+    }
+    const char *p = strstr(text, "SCORES:");
+    if (!p) {
+        return 0;
+    }
+    p += strlen("SCORES:");
+    int count = 0;
+    while (*p != '\0' && *p != '\n' && *p != '\r' && count < max_scores) {
+        while (*p == ' ' || *p == '\t' || *p == ',') {
+            p++;
+        }
+        if (*p == '\0' || *p == '\n' || *p == '\r') {
+            break;
+        }
+        scores[count++] = atoi(p);
+        while (*p != '\0' && *p != ',' && *p != '\n' && *p != '\r') {
+            p++;
+        }
+    }
+    return count;
+}
+
+static uint32_t emotion_score_color(int score)
+{
+    if (score >= 2) return 0x1ecf82;
+    if (score == 1) return 0xf2be3e;
+    if (score == 0) return 0x20d9d2;
+    if (score == -1) return 0x8d8ce8;
+    return 0xff6577;
+}
+
+static void emotion_draw_score_bars(lv_obj_t *parent, const int *scores, int count,
+                                    int x, int y, int w, int h)
+{
+    lv_obj_t *chart = lvgl_card(parent, x, y, w, h, 0x092438, 6);
+    lvgl_card_border(chart, 0x147e9d, 1);
+    lv_obj_t *mid = lvgl_card(chart, 12, h / 2, w - 24, 2, 0x315669, 1);
+    lv_obj_set_style_bg_opa(mid, LV_OPA_60, 0);
+    if (!scores || count <= 0) {
+        lvgl_center_label(chart, "NO DATA", 0, h / 2 - 12, w,
+                          &lv_font_montserrat_20, 0x88b9c7);
+        return;
+    }
+
+    int gap = 3;
+    int usable = w - 24;
+    int bar_w = usable / count - gap;
+    if (bar_w < 4) {
+        bar_w = 4;
+        gap = 1;
+    }
+    if (bar_w > 24) {
+        bar_w = 24;
+    }
+    int zero_y = h / 2;
+    for (int i = 0; i < count; i++) {
+        int score = scores[i];
+        if (score > 2) score = 2;
+        if (score < -2) score = -2;
+        int mag = score >= 0 ? score : -score;
+        int bar_h = 6 + mag * ((h / 2 - 16) / 2);
+        int bx = 12 + i * (bar_w + gap);
+        int by = score >= 0 ? zero_y - bar_h : zero_y;
+        lvgl_card(chart, bx, by, bar_w, bar_h, emotion_score_color(score), 3);
+    }
+}
+
+static bool lvgl_show_emotion_report_page(const char *text, bool monthly)
 {
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(LEXIN_SCREEN_EMOTION);
+    s_emotion_view = monthly ? EMOTION_VIEW_MONTHLY : EMOTION_VIEW_DAILY;
+
+    char model[48], date[48], month[48], samples[32], dominant[64];
+    char avg[32], stress[32], positive[32], advice[384];
+    copy_field_value(text, "MODEL:", model, sizeof(model));
+    copy_field_value(text, "DATE:", date, sizeof(date));
+    copy_field_value(text, "MONTH:", month, sizeof(month));
+    copy_field_value(text, "SAMPLES:", samples, sizeof(samples));
+    copy_field_value(text, "DOMINANT:", dominant, sizeof(dominant));
+    copy_field_value(text, "AVG_SCORE:", avg, sizeof(avg));
+    copy_field_value(text, "STRESS_TIRED:", stress, sizeof(stress));
+    copy_field_value(text, "HAPPY_FOCUSED:", positive, sizeof(positive));
+    copy_field_raw_value(text, "ADVICE:", advice, sizeof(advice));
+
+    lv_obj_t *scr = lv_screen_active();
+    clear_emotion_live_widget_refs();
+    lv_obj_clean(scr);
+    lvgl_set_vertical_gradient(scr, 0x06111c, 0x0b2635);
+    lv_obj_t *header = lvgl_card(scr, 0, 0, LCD_H_RES, 82, 0x0b3650, 0);
+    lvgl_set_vertical_gradient(header, 0x0a2740, 0x086179);
+    lvgl_label(header, "BACK", 24, 27, &lv_font_montserrat_20, 0xffffff);
+    lvgl_label(header, monthly ? "EMOTION MONTH" : "EMOTION TODAY",
+               112, 20, &lv_font_montserrat_28, 0xffffff);
+    lvgl_label(header, monthly ? month : date, 444, 29,
+               &lv_font_montserrat_20, 0x99f3ff);
+
+    lv_obj_t *summary = lvgl_card(scr, 36, 112, 330, 344, 0x0c3047, 8);
+    lvgl_card_border(summary, 0x1cc9d5, 2);
+    lvgl_label(summary, "SUMMARY", 22, 22, &lv_font_montserrat_20, 0xb8f7ff);
+    char line[384];
+    snprintf(line, sizeof(line),
+             "MODEL: %s\nSAMPLES: %s\n%s: %s\nAVG: %s\n%s: %s\n%s: %s",
+             model, samples,
+             "DOMINANT", dominant,
+             avg,
+             "STRESS", stress,
+             "POSITIVE", positive);
+    lv_obj_t *summary_label = lvgl_label(summary, line, 22, 70,
+                                         &lv_font_montserrat_20, 0xd6f4fb);
+    lv_obj_set_width(summary_label, 286);
+    lv_label_set_long_mode(summary_label, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t *chart_card = lvgl_card(scr, 394, 112, 594, 202, 0x0c3c50, 8);
+    lvgl_card_border(chart_card, 0x20d9d2, 2);
+    lvgl_label(chart_card, monthly ? "DAILY TREND" : "HOURLY TREND",
+               22, 18, &lv_font_montserrat_20, 0xb8f7ff);
+    int scores[32];
+    int count = emotion_parse_scores(text, scores, 32);
+    emotion_draw_score_bars(chart_card, scores, count, 22, 58, 550, 118);
+
+    lv_obj_t *advice_card = lvgl_card(scr, 394, 338, 594, 190, 0x0b3048, 8);
+    lvgl_card_border(advice_card, 0x147e9d, 2);
+    lvgl_label(advice_card, "ADVICE", 22, 16, &lv_font_montserrat_20, 0x7edce8);
+    lv_obj_t *advice_label = lvgl_label(advice_card, advice, 22, 56,
+                                        &lexin_cn_20, 0xffffff);
+    lv_obj_set_width(advice_label, 548);
+    lv_label_set_long_mode(advice_label, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t *hint = lvgl_card(scr, 36, 480, 330, 48, 0x123e5a, 8);
+    lvgl_center_label(hint, "BACK returns to emotion page", 0, 12, 330,
+                      &lv_font_montserrat_20, 0xb8f7ff);
+
+    lvgl_port_unlock();
+    return true;
+}
+
+static bool lvgl_show_voice_page(void)
+{
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
+        return false;
+    }
+    lexin_voice_set_mode("voice");
+    lexin_launcher_show_screen(LEXIN_SCREEN_VOICE);
+
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lvgl_set_vertical_gradient(scr, 0xfff5fa, 0xffd9ea);
+
+    /* Header. */
+    lvgl_card(scr, 0, 0, LCD_H_RES, 86, 0xff4f8a, 0);
+    lv_obj_set_style_bg_opa(lvgl_card(scr, 0, 86, LCD_H_RES, 88, 0xffa8d8, 0), LV_OPA_40, 0);
+    lvgl_label(scr, "返回", 32, 28, &lexin_cn_20, 0xffffff);
+    lvgl_label(scr, "语音对话", 110, 24, &lexin_cn_28, 0xffffff);
+
+    lvgl_card(scr, 24, 18, 360, 52, 0xff4f8a, 0);
+    lvgl_label(scr, "返回", 32, 28, &lexin_cn_20, 0xffffff);
+    lvgl_label(scr, "语音对话", 110, 24, &lexin_cn_28, 0xffffff);
+
+    /* State pill (large). */
+    lv_obj_t *state_pill = lvgl_card(scr, 32, 116, 380, 64, 0xffffff, 28);
+    lv_obj_set_style_bg_opa(state_pill, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(state_pill, 2, 0);
+    lv_obj_set_style_border_color(state_pill, lv_color_hex(0xff4f8a), 0);
+    s_voice_state_pill = lvgl_label(state_pill, voice_state_cn(s_voice_snapshot.state),
+                                       22, 18, &lexin_cn_28, 0xff4f8a);
+    lvgl_label_width(s_voice_state_pill, 336);
+    s_voice_status_label = lvgl_label(scr, "BOOTING", 432, 124,
+                                      &lv_font_montserrat_20, 0x10283e);
+    lvgl_label_width(s_voice_status_label, 240);
+    s_voice_backend_label = lvgl_label(scr, "backend --", 432, 154,
+                                       &lv_font_montserrat_20, 0x577489);
+    lvgl_label_width(s_voice_backend_label, 240);
+    s_voice_meter_label = lvgl_label(scr, "RMS 0", 700, 124,
+                                     &lv_font_montserrat_20, 0x9465ff);
+    lvgl_label_width(s_voice_meter_label, 200);
+
+    /* Tip card. */
+    lv_obj_t *tip_card = lvgl_glass_card(scr, 32, 200, 960, 110, 22);
+    lvgl_label(tip_card, "使用方法", 24, 16, &lexin_cn_20, 0x577489);
+    lvgl_label(tip_card, "在本页直接说一句话即可；回到主页后，可喊“乐鑫乐鑫”唤醒", 24, 46,
+                  &lexin_cn_20, 0x10283e);
+    lvgl_label(tip_card, "等喇叭到位后会接 TTS 念出来", 24, 76,
+                  &lexin_cn_20, 0x9465ff);
+
+    lv_obj_t *tip_mask = lvgl_card(tip_card, 18, 10, 924, 90, 0xffffff, 0);
+    lv_obj_set_style_bg_opa(tip_mask, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(tip_mask, 0, 0);
+    lvgl_label(tip_mask, "使用方法", 6, 6, &lexin_cn_20, 0x577489);
+    lvgl_label(tip_mask, "先说“乐鑫乐鑫”，听到提示后再说一句话", 6, 34,
+               &lexin_cn_20, 0x10283e);
+    lvgl_label(tip_mask, "观察 RMS 数值，接近 0 表示麦克风没有输入", 6, 62,
+               &lexin_cn_20, 0x9465ff);
+
+    /* Reply card. */
+    lv_obj_t *reply_card = lvgl_glass_card(scr, 32, 322, 960, 230, 22);
+    lvgl_label(reply_card, "你说", 24, 16, &lexin_cn_20, 0x577489);
+    s_voice_transcript_label = lvgl_label(reply_card, "（等待识别）", 24, 46, &lexin_cn_20, 0x10283e);
+    lvgl_label_width(s_voice_transcript_label, 912);
+    lvgl_label(reply_card, "回复", 24, 86, &lexin_cn_20, 0x577489);
+    s_voice_reply_label = lvgl_label(reply_card, "（暂无回复）", 24, 116, &lexin_cn_28, 0xff4f8a);
+    lvgl_label_width(s_voice_reply_label, 912);
+
+    lv_obj_t *reply_title_mask = lvgl_card(reply_card, 18, 10, 924, 110, 0xffffff, 0);
+    lv_obj_set_style_bg_opa(reply_title_mask, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(reply_title_mask, 0, 0);
+    lvgl_label(reply_title_mask, "你说", 6, 6, &lexin_cn_20, 0x577489);
+    lvgl_label(reply_title_mask, "回复", 6, 72, &lexin_cn_20, 0x577489);
+    lv_obj_move_foreground(s_voice_transcript_label);
+    lv_obj_move_foreground(s_voice_reply_label);
+
+    lvgl_refresh_voice_page();
+    lvgl_port_unlock();
+    return true;
+}
+
+static void lvgl_refresh_voice_page(void)
+{
+    if (!s_lvgl_ready || !s_voice_state_pill || !s_voice_reply_label) {
+        return;
+    }
+    if (!lvgl_port_lock(80)) {
+        return;
+    }
+
+    lv_label_set_text(s_voice_state_pill, voice_state_cn(s_voice_snapshot.state));
+    lv_obj_set_style_text_color(s_voice_state_pill,
+                                  lv_color_hex(voice_state_color(s_voice_snapshot.state)), 0);
+    lv_label_set_text(s_voice_status_label,
+                         s_voice_snapshot.status[0] ? s_voice_snapshot.status : "待命中");
+    lv_label_set_text(s_voice_backend_label,
+                         voice_backend_text(s_voice_snapshot.backend));
+    char meter[32];
+    snprintf(meter, sizeof(meter), "RMS %u", s_voice_snapshot.rms);
+    lv_label_set_text(s_voice_meter_label, meter);
+
+    const char *transcript = s_voice_snapshot.transcript[0]
+        ? s_voice_snapshot.transcript : "（等待识别）";
+    lv_label_set_text(s_voice_transcript_label, transcript);
+
+    const char *reply = s_voice_snapshot.reply[0]
+        ? s_voice_snapshot.reply : "（暂无回复）";
+    lv_label_set_text(s_voice_reply_label, reply);
+
+    lvgl_port_unlock();
+}
+
+void lexin_screen_update_voice_context(const lexin_voice_snapshot_t *snapshot)
+{
+    if (!snapshot) {
+        return;
+    }
+    s_voice_snapshot_valid = true;
+    s_voice_snapshot = *snapshot;
+
+    /* Daily-plan capture replies (status PLAN_OK / PLAN_EMPTY) never touch
+     * the voice page. End the recording state and refresh the plan page. */
+    if (strncmp(snapshot->status, "PLAN", 4) == 0) {
+        s_plan_recording = false;
+        lexin_voice_set_mode("chat");
+        if (strcmp(snapshot->status, "PLAN_OK") == 0) {
+            lexin_plan_fetch_today();   /* reload + re-render the plan page */
+        } else if (s_lvgl_ready && lvgl_port_lock(200)) {
+            if (lexin_launcher_current_screen() == LEXIN_SCREEN_PLAN) {
+                lvgl_show_plan_page();
+            }
+            lvgl_port_unlock();
+        }
+        return;
+    }
+
+    /* While locked (or on the register screen) the launcher screen-state
+     * is still LEXIN_SCREEN_LAUNCHER, so the banner-refresh and the
+     * wake-reply hijack below would repaint over the lock screen. Voice
+     * UI must stay dormant until the user is authenticated. */
+    if (!lexin_face_auth_is_logged_in()) {
+        return;
+    }
+
+    const char *state_text = voice_state_cn(snapshot->state);
+    bool banner_changed = state_text != s_voice_banner_state;
+    s_voice_banner_state = state_text;
+
+    /* A "conversational" reply is one the proxy accepted after a wake
+     * word / open session (status OK or WAKE). NO_WAKE / NO_ASR replies
+     * must not hijack the screen. */
+    bool conversational = snapshot->state == LEXIN_VOICE_STATE_REPLY &&
+        (strcmp(snapshot->status, "OK") == 0 ||
+         strcmp(snapshot->status, "WAKE") == 0);
+    bool fresh_reply = conversational &&
+        snapshot->updated_at_ms != s_voice_last_reply_ms;
+
+    if (!s_lvgl_ready) {
+        return;
+    }
+    /* Hold the LVGL lock (recursive) across both the screen check and
+     * the redraw. Otherwise this task can pass the "still on launcher"
+     * check, lose the CPU to a touch that opens a result page, and then
+     * repaint the launcher over it while desyncing s_current_screen. */
+    if (!lvgl_port_lock(200)) {
+        return;
+    }
+    lexin_screen_id_t cur = lexin_launcher_current_screen();
+    if (cur == LEXIN_SCREEN_VOICE) {
+        lvgl_refresh_voice_page();
+    } else if (fresh_reply && cur == LEXIN_SCREEN_LAUNCHER) {
+        /* Wake succeeded while the user was on the launcher: surface the
+         * conversation so the recognized text and reply are visible. */
+        lvgl_show_voice_page();
+    } else if (banner_changed && cur == LEXIN_SCREEN_LAUNCHER) {
+        /* Redraw the launcher banner so the user can see the live
+         * state without opening the voice page. */
+        lvgl_show_launcher();
+    }
+    if (conversational) {
+        s_voice_last_reply_ms = snapshot->updated_at_ms;
+    }
+    lvgl_port_unlock();
+}
+
+static bool lvgl_show_pet_ai_page(void)
+{
+    ESP_LOGI(TAG, "render pet");
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
+        return false;
+    }
+    lexin_launcher_show_screen(LEXIN_SCREEN_PET);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
@@ -1698,9 +3089,13 @@ static bool lvgl_show_pet_ai_page(void)
 
 static bool lvgl_show_querying_page(lexin_action_id_t action_id)
 {
+    ESP_LOGI(TAG, "render querying action=%d", (int)action_id);
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(action_id == LEXIN_ACTION_WEATHER ?
+        LEXIN_SCREEN_WEATHER : action_id == LEXIN_ACTION_TIME ?
+        LEXIN_SCREEN_CALENDAR : LEXIN_SCREEN_SUGGESTION);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
@@ -1721,6 +3116,7 @@ static bool lvgl_show_querying_page(lexin_action_id_t action_id)
 
 static bool lvgl_show_weather_result_page(const char *text)
 {
+    ESP_LOGI(TAG, "render weather result");
     char temp[32];
     char weather[48];
     char rain[32];
@@ -1752,6 +3148,7 @@ static bool lvgl_show_weather_result_page(const char *text)
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(LEXIN_SCREEN_WEATHER);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
@@ -1806,21 +3203,34 @@ static bool lvgl_show_weather_result_page(const char *text)
     return true;
 }
 
-static void lvgl_calendar_cell(lv_obj_t *parent, int x, int y, const char *day, bool muted, bool active)
+static void lvgl_calendar_cell(lv_obj_t *parent, int x, int y, const char *day, bool muted,
+                               bool active, int percent)
 {
     lv_obj_t *cell = lvgl_card(parent, x, y, 72, 40, active ? 0x28a7e8 : 0xffffff, 12);
     lv_obj_set_style_bg_opa(cell, active ? LV_OPA_COVER : LV_OPA_0, 0);
     lv_obj_set_style_border_width(cell, active ? 0 : 1, 0);
     lv_obj_set_style_border_color(cell, lv_color_hex(0xe2eef5), 0);
     lv_obj_set_style_border_opa(cell, muted ? LV_OPA_0 : LV_OPA_40, 0);
-    lv_obj_t *label = lvgl_label(cell, day, 0, 8, &lv_font_montserrat_20,
+    lv_obj_t *label = lvgl_label(cell, day, 0, 4, &lv_font_montserrat_20,
                                  active ? 0xffffff : muted ? 0xb6c4cf : 0x172a3a);
     lv_obj_set_width(label, 72);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+
+    /* Daily plan progress: a small framed bar filled by completion %. */
+    if (percent >= 0) {
+        lv_obj_t *bar_bg = lvgl_card(cell, 10, 30, 52, 6, active ? 0x1c85c0 : 0xe2f0e9, 3);
+        lvgl_card_border(bar_bg, active ? 0xbfe4f7 : 0x9fd8bd, 1);
+        int fill = percent > 100 ? 100 : percent;
+        int fill_w = (52 * fill) / 100;
+        if (fill_w > 0) {
+            lvgl_card(bar_bg, 0, 0, fill_w, 6, 0x2fb98a, 3);
+        }
+    }
 }
 
 static bool lvgl_show_calendar_result_page(const char *text)
 {
+    ESP_LOGI(TAG, "render calendar result");
     char time_value[32];
     char date[32];
     char lunar[64];
@@ -1855,6 +3265,7 @@ static bool lvgl_show_calendar_result_page(const char *text)
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(LEXIN_SCREEN_CALENDAR);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
@@ -1869,6 +3280,10 @@ static bool lvgl_show_calendar_result_page(const char *text)
 
     lv_obj_t *back = lvgl_label(scr, "返回", 32, 23, &lexin_cn_20, 0xffffff);
     lv_obj_set_style_text_letter_space(back, 1, 0);
+    /* Entry to the daily plan module (handled in handle_calendar_touch). */
+    lv_obj_t *plan_btn = lvgl_card(scr, 724, 18, 250, 48, 0x1c8f66, 24);
+    lvgl_card_border(plan_btn, 0xbff0dc, 2);
+    lvgl_center_label(plan_btn, "今日计划", 0, 12, 250, &lexin_cn_20, 0xffffff);
     lvgl_label(main_card, "提醒服务", 32, 30, &lexin_cn_28, 0x10283e);
     lvgl_label(main_card, month_name_cn(month), 32, 68, &lexin_cn_20, 0x667784);
     lvgl_label(main_card, time_value, 734, 34, &lv_font_montserrat_32, 0x1b8ed2);
@@ -1899,8 +3314,13 @@ static bool lvgl_show_calendar_result_page(const char *text)
         }
         char day_text[16];
         snprintf(day_text, sizeof(day_text), "%d", shown_day);
+        int cell_percent = -1;
+        if (!muted && shown_day >= 1 && shown_day <= 31 &&
+            s_plan_month_percent[shown_day] != 255) {
+            cell_percent = s_plan_month_percent[shown_day];
+        }
         lvgl_calendar_cell(main_card, start_x + (i % 7) * cell_w, start_y + (i / 7) * cell_h,
-                           day_text, muted, active);
+                           day_text, muted, active, cell_percent);
     }
 
     lvgl_card_border(date_card, 0xffffff, 1);
@@ -1927,11 +3347,315 @@ static bool lvgl_show_calendar_result_page(const char *text)
     return true;
 }
 
+/* ----------------------------------------------------------------- */
+/* Daily plan module                                                  */
+/* ----------------------------------------------------------------- */
+
+static void parse_plan_text(const char *text)
+{
+    s_plan_count = 0;
+    s_plan_percent = 0;
+    if (!text) {
+        return;
+    }
+    char buf[16];
+    copy_field_value(text, "PERCENT:", buf, sizeof(buf));
+    s_plan_percent = atoi(buf);           /* "UNKNOWN" -> 0 */
+    if (s_plan_percent < 0) s_plan_percent = 0;
+    if (s_plan_percent > 100) s_plan_percent = 100;
+
+    copy_field_value(text, "COUNT:", buf, sizeof(buf));
+    int count = atoi(buf);
+    if (count < 0) count = 0;
+    if (count > LEXIN_PLAN_MAX_ITEMS) count = LEXIN_PLAN_MAX_ITEMS;
+
+    for (int i = 0; i < count; i++) {
+        char key[20];
+        snprintf(key, sizeof(key), "ITEM%d:", i);
+        char raw[LEXIN_PLAN_ITEM_LEN];
+        copy_field_raw_value(text, key, raw, sizeof(raw));
+        if (strcmp(raw, "UNKNOWN") == 0) {
+            continue;
+        }
+        bool done = false;
+        const char *txt = raw;
+        char *bar = strchr(raw, '|');
+        if (bar) {
+            done = (raw[0] == '1');
+            txt = bar + 1;
+        }
+        s_plan_done[s_plan_count] = done;
+        snprintf(s_plan_items[s_plan_count], LEXIN_PLAN_ITEM_LEN, "%s", txt);
+        s_plan_count++;
+    }
+}
+
+static void lvgl_draw_plant(lv_obj_t *parent, int x, int y, int w, int h, int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    int cx = x + w / 2;
+    int base_y = y + h - 48;                 /* top of the pot */
+
+    /* Pot + rim + soil. */
+    lvgl_card(parent, cx - 46, base_y, 92, 60, 0xcf7a4a, 10);
+    lvgl_card(parent, cx - 52, base_y - 12, 104, 18, 0xe08a57, 6);
+    lvgl_card(parent, cx - 44, base_y - 4, 88, 10, 0x6b4a2f, 4);
+
+    /* Stem grows with completion. */
+    int stem_h = 16 + (percent * 150) / 100; /* 16..166 px */
+    int stem_top = base_y - 4 - stem_h;
+    lvgl_card(parent, cx - 5, stem_top, 10, stem_h, 0x3fa76a, 5);
+
+    if (percent >= 25) {
+        lvgl_card(parent, cx - 46, stem_top + stem_h / 2, 44, 18, 0x54c07d, 9);
+    }
+    if (percent >= 45) {
+        lvgl_card(parent, cx + 2, stem_top + stem_h / 3, 44, 18, 0x54c07d, 9);
+    }
+
+    if (percent >= 100) {
+        lvgl_card(parent, cx - 26, stem_top - 26, 52, 52, 0xff9ec4, LV_RADIUS_CIRCLE);
+        lvgl_card(parent, cx - 12, stem_top - 12, 24, 24, 0xffd23f, LV_RADIUS_CIRCLE);
+    } else if (percent >= 80) {
+        lvgl_card(parent, cx - 20, stem_top - 18, 40, 40, 0xffb3d1, LV_RADIUS_CIRCLE);
+        lvgl_card(parent, cx - 9, stem_top - 7, 18, 18, 0xffd23f, LV_RADIUS_CIRCLE);
+    } else if (percent >= 60) {
+        lvgl_card(parent, cx - 14, stem_top - 8, 28, 28, 0xff9ec4, LV_RADIUS_CIRCLE);
+    } else if (percent >= 25) {
+        lvgl_card(parent, cx - 9, stem_top - 6, 18, 18, 0x9be0b0, LV_RADIUS_CIRCLE);
+    } else {
+        lvgl_card(parent, cx - 7, stem_top - 4, 14, 14, 0x8fd6a6, LV_RADIUS_CIRCLE);
+    }
+
+    const char *stage = percent >= 100 ? "绽放啦" :
+                        percent >= 80 ? "快开花了" :
+                        percent >= 60 ? "含苞待放" :
+                        percent >= 25 ? "茁壮成长" :
+                        percent > 0 ? "发芽中" : "等待播种";
+    lvgl_center_label(parent, stage, x, y + h + 2, w, &lexin_cn_20, 0x2f7d5a);
+}
+
+static bool lvgl_show_plan_page(void)
+{
+    ESP_LOGI(TAG, "render plan");
+    if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
+        return false;
+    }
+    lexin_launcher_show_screen(LEXIN_SCREEN_PLAN);
+
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lvgl_set_vertical_gradient(scr, 0xeafaf0, 0xd2f0e6);
+
+    lvgl_card(scr, 0, 0, LCD_H_RES, 84, 0x2fb98a, 0);
+    lvgl_label(scr, "返回", 32, 26, &lexin_cn_20, 0xffffff);
+    const char *title = s_plan_day_view ? s_plan_day_title : "今日计划";
+    lvgl_label(scr, title, 150, 22, &lexin_cn_28, 0xffffff);
+    char pct[24];
+    snprintf(pct, sizeof(pct), "完成 %d%%", s_plan_percent);
+    lvgl_label(scr, pct, 800, 30, &lexin_cn_28, 0xffffff);
+
+    /* Plain cards (no padding) so touch hit-testing lines up exactly. */
+    lv_obj_t *list = lvgl_card(scr, 40, 108, 560, 460, 0xf4fbf8, 24);
+    lvgl_card_border(list, 0xc7e9db, 1);
+    const int list_start = 24;
+    const int list_step = 34;
+    if (s_plan_recording) {
+        lvgl_label(list, "正在聆听，请说出今天要完成的事…", 32, 60, &lexin_cn_28, 0x14413a);
+        lvgl_label(list, "例如：完成数学作业、跑步三十分钟、看书一小时", 32, 118,
+                   &lexin_cn_20, 0x4d7a70);
+    } else if (s_plan_count == 0) {
+        lvgl_label(list, "今天还没有计划", 32, 66, &lexin_cn_28, 0x14413a);
+        if (!s_plan_day_view) {
+            lvgl_label(list, "点右下角按钮，用语音说出今天的计划", 32, 126,
+                       &lexin_cn_20, 0x4d7a70);
+        }
+    } else {
+        for (int i = 0; i < s_plan_count; i++) {
+            int row_y = list_start + i * list_step;
+            lv_obj_t *box = lvgl_card(list, 30, row_y, 26, 26,
+                                      s_plan_done[i] ? 0x2fb98a : 0xffffff, 8);
+            lvgl_card_border(box, 0x2fb98a, 2);
+            lv_obj_t *lab = lvgl_label(list, s_plan_items[i], 74, row_y + 1, &lexin_cn_20,
+                                       s_plan_done[i] ? 0x8fb3aa : 0x14413a);
+            lvgl_label_width(lab, 420);
+            /* Per-row delete button ("x"), right-aligned in the row. Past
+             * days are editable too, so it shows in both views. */
+            lv_obj_t *del = lvgl_card(list, 506, row_y, 34, 26, 0xffffff, 8);
+            lvgl_card_border(del, 0xd9534f, 2);
+            lvgl_center_label(del, "x", 0, 2, 34, &lv_font_montserrat_20, 0xd9534f);
+        }
+    }
+
+    lv_obj_t *grow = lvgl_card(scr, 620, 108, 364, 460, 0xf4fbf8, 24);
+    lvgl_card_border(grow, 0xc7e9db, 1);
+    lvgl_label(grow, "成长花园", 28, 20, &lexin_cn_28, 0x14413a);
+    lvgl_label(grow, "每完成一项，小花就长大一点", 28, 62, &lexin_cn_20, 0x4d7a70);
+    lvgl_draw_plant(grow, 40, 104, 284, 300, s_plan_percent);
+
+    if (!s_plan_day_view) {
+        bool plan_full = !s_plan_recording && s_plan_count >= LEXIN_PLAN_MAX_ITEMS;
+        uint32_t rec_color = s_plan_recording ? 0xff7043 :
+                             plan_full ? 0x9db8ae : 0x2fb98a;
+        lv_obj_t *rec = lvgl_card(scr, 620, 512, 364, 52, rec_color, 26);
+        lvgl_center_label(rec,
+                          s_plan_recording ? "结束录入" :
+                          plan_full ? "计划已满 删除后再录" : "语音录入计划",
+                          0, 12, 364, &lexin_cn_28, 0xffffff);
+    }
+
+    lvgl_port_unlock();
+    return true;
+}
+
+static bool handle_plan_touch(uint16_t x, uint16_t y)
+{
+    /* Back to the calendar. */
+    if (x < 170 && y < 84) {
+        s_plan_recording = false;
+        s_plan_day_view = false;
+        lexin_voice_set_mode("chat");
+        if (s_cached_calendar[0] != '\0') {
+            lvgl_show_calendar_result_page(s_cached_calendar);
+            /* Re-pull month completion so the day colours reflect any
+             * toggles/deletes just made on the plan page. */
+            lexin_plan_fetch_month();
+        } else {
+            lexin_screen_show_idle();
+        }
+        return true;
+    }
+
+    /* Voice record toggle (only on today's editable view). */
+    if (!s_plan_day_view && x >= 620 && x < 984 && y >= 512 && y < 564) {
+        if (s_plan_recording) {
+            s_plan_recording = false;
+            lexin_voice_set_mode("chat");
+        } else if (s_plan_count >= LEXIN_PLAN_MAX_ITEMS) {
+            /* Button reads "计划已满 删除后再录" — nothing to start. */
+            return true;
+        } else {
+            s_plan_recording = true;
+            lexin_voice_set_mode("plan");
+        }
+        lvgl_show_plan_page();
+        return true;
+    }
+
+    /* Toggle or delete a checklist item. Today's list and past days from
+     * the calendar are both editable; edits on a past day carry its date
+     * so the proxy updates the right plan file. */
+    bool editable = !s_plan_day_view || s_plan_view_year > 0;
+    if (editable && !s_plan_recording && s_plan_count > 0) {
+        const int list_x = 40, list_y = 108, list_start = 24, list_step = 34;
+        for (int i = 0; i < s_plan_count; i++) {
+            int ry = list_y + list_start + i * list_step;
+            if (y < ry - 4 || y >= ry + 30) {
+                continue;
+            }
+            /* Delete button: drawn at list-relative x=506 w=34 (abs 546..580).
+             * Hit zone is slightly padded on both sides. */
+            if (x >= list_x + 500 && x < list_x + 548) {
+                ESP_LOGI(TAG, "plan delete item %d (day_view=%d)", i, (int)s_plan_day_view);
+                for (int k = i; k < s_plan_count - 1; k++) {
+                    s_plan_done[k] = s_plan_done[k + 1];
+                    memcpy(s_plan_items[k], s_plan_items[k + 1], LEXIN_PLAN_ITEM_LEN);
+                }
+                s_plan_count--;
+                int done = 0;
+                for (int k = 0; k < s_plan_count; k++) {
+                    if (s_plan_done[k]) done++;
+                }
+                s_plan_percent = s_plan_count ? (done * 100) / s_plan_count : 0;
+                lvgl_show_plan_page();
+                /* persist + refresh from proxy */
+                if (s_plan_day_view) {
+                    lexin_plan_delete_day(i, s_plan_view_year,
+                                          s_plan_view_month, s_plan_view_day);
+                } else {
+                    lexin_plan_delete(i);
+                }
+                return true;
+            }
+            if (x >= list_x + 20 && x < list_x + 500) {
+                s_plan_done[i] = !s_plan_done[i];
+                int done = 0;
+                for (int k = 0; k < s_plan_count; k++) {
+                    if (s_plan_done[k]) done++;
+                }
+                s_plan_percent = s_plan_count ? (done * 100) / s_plan_count : 0;
+                lvgl_show_plan_page();
+                /* persist + refresh from proxy */
+                if (s_plan_day_view) {
+                    lexin_plan_toggle_day(i, s_plan_view_year,
+                                          s_plan_view_month, s_plan_view_day);
+                } else {
+                    lexin_plan_toggle(i);
+                }
+                return true;
+            }
+            break;
+        }
+    }
+    return true;   /* consume all taps while on the plan page */
+}
+
+static bool handle_calendar_touch(uint16_t x, uint16_t y)
+{
+    /* Plan entry button in the header. */
+    if (x >= 724 && x < 974 && y >= 18 && y < 66) {
+        lexin_screen_show_plan();
+        return true;
+    }
+
+    /* Day cell -> that day's plan record (editable). main_card sits at
+     * (54,106); cells use the same constants as the render loop. Cells
+     * are 72 px wide on a 126 px pitch; attribute taps in the 54 px gap
+     * to the nearest cell so day taps don't silently miss. */
+    int rel_x = (int)x - 54 - 34;
+    int rel_y = (int)y - 106 - 124;
+    if (rel_x < 0 || rel_y < 0) {
+        return false;
+    }
+    int col = rel_x / 126;
+    int row = rel_y / 34;
+    if (col < 0 || col > 6 || row < 0 || row > 5) {
+        return false;
+    }
+    if ((rel_x - col * 126) > 99 && col < 6) {
+        col++;   /* right half of the gap belongs to the next cell */
+    }
+
+    int year = 0, month = 0, cur_day = 0;
+    /* s_cached_calendar holds the full proxy text (TIME:/DATE:/…), not a bare
+     * date string — extract DATE: first, same as lvgl_show_calendar_result_page. */
+    char date_buf[32];
+    copy_field_value(s_cached_calendar, "DATE:", date_buf, sizeof(date_buf));
+    if (!parse_date_parts(date_buf, &year, &month, &cur_day)) {
+        ESP_LOGW(TAG, "calendar day tap: no DATE in cache (tap %u,%u)", x, y);
+        return true;
+    }
+    int first_weekday = weekday_monday0(year, month, 1);
+    int month_days = days_in_month(year, month);
+    int index = row * 7 + col;
+    if (index < first_weekday || index >= first_weekday + month_days) {
+        return true;    /* adjacent-month day: consume the tap, do nothing */
+    }
+    int tapped_day = index - first_weekday + 1;
+    ESP_LOGI(TAG, "calendar day tap -> %04d-%02d-%02d", year, month, tapped_day);
+    lexin_plan_fetch_day(year, month, tapped_day);
+    return true;
+}
+
 static bool lvgl_show_error_page(lexin_action_id_t action_id)
 {
     if (!s_lvgl_ready || !lvgl_port_lock(1000)) {
         return false;
     }
+    lexin_launcher_show_screen(action_id == LEXIN_ACTION_WEATHER ?
+        LEXIN_SCREEN_WEATHER : action_id == LEXIN_ACTION_TIME ?
+        LEXIN_SCREEN_CALENDAR : LEXIN_SCREEN_SUGGESTION);
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
     lvgl_set_bg(scr, 0xfff5f5);
@@ -2029,80 +3753,176 @@ static void init_lcd(esp_lcd_panel_handle_t *out_panel)
 
 static bool init_touch(void)
 {
-    ESP_LOGI(TAG, "Use shared BSP I2C bus SDA=%d SCL=%d", TOUCH_I2C_SDA, TOUCH_I2C_SCL);
-    esp_err_t ret = bsp_i2c_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "BSP I2C init failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-    i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
-    if (!i2c_bus) {
-        ESP_LOGE(TAG, "BSP I2C handle is unavailable");
-        return false;
-    }
-
-    esp_lcd_panel_io_handle_t tp_io = NULL;
-    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
-    tp_io_config.scl_speed_hz = TOUCH_I2C_FREQ_HZ;
-    ret = esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_config, &tp_io);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Touch I2C panel IO init failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-
-    esp_lcd_touch_config_t tp_cfg = {
-        .x_max = LCD_H_RES,
-        .y_max = LCD_V_RES,
-        .rst_gpio_num = -1,
-        .int_gpio_num = -1,
-        .levels = {
-            .reset = 0,
-            .interrupt = 0,
-        },
-        .flags = {
-            .swap_xy = false,
-            .mirror_x = false,
-            .mirror_y = false,
-        },
-    };
-    vTaskDelay(pdMS_TO_TICKS(180));
+    ESP_LOGI(TAG, "Initialize BSP GT911 touch on I2C SDA=%d SCL=%d", TOUCH_I2C_SDA, TOUCH_I2C_SCL);
+    bsp_touch_config_t tp_cfg = {0};
+    vTaskDelay(pdMS_TO_TICKS(300));
     for (int attempt = 1; attempt <= 6; ++attempt) {
-        ret = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &s_touch);
+        s_touch = NULL;
+        esp_err_t ret = bsp_touch_new(&tp_cfg, &s_touch);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "GT911 ready after attempt %d", attempt);
             return true;
         }
         ESP_LOGW(TAG, "GT911 init attempt %d/6 failed: %s",
                  attempt, esp_err_to_name(ret));
-        vTaskDelay(pdMS_TO_TICKS(180));
+        bsp_touch_delete();
+        vTaskDelay(pdMS_TO_TICKS(300));
     }
     ESP_LOGE(TAG, "GT911 unavailable; keep display and AI services running");
     return false;
 }
 
+/* GT911 occasionally drops a single "no touch" poll in the middle of a
+ * press. Treating that as a release re-arms the trigger while the finger
+ * is still down, so the same physical tap fires twice — e.g. the launcher
+ * Lock button (x 650..790) retriggers on the lock screen, whose WiFi hit
+ * region (x >= 700) overlaps the same spot, jumping straight to the WiFi
+ * page. Require several consecutive empty polls before declaring release. */
+#define TOUCH_RELEASE_POLLS 3
+/* Ignore lock-screen taps briefly after a manual lock so a lingering
+ * finger or an accidental double-tap cannot activate lock-screen buttons. */
+#define MANUAL_LOCK_GUARD_MS 800
+
 static void touch_task(void *arg)
 {
     bool pressed = false;
+    int release_polls = 0;
     TickType_t last_trigger_tick = 0;
+    TickType_t manual_lock_tick = 0;
 
     while (1) {
         esp_lcd_touch_read_data(s_touch);
 
-        uint16_t x[1];
-        uint16_t y[1];
-        uint16_t strength[1];
+        uint16_t x[1] = {0};
+        uint16_t y[1] = {0};
+        uint16_t strength[1] = {0};
         uint8_t point_count = 0;
         bool touched = esp_lcd_touch_get_coordinates(s_touch, x, y, strength, &point_count, 1);
+        uint16_t raw_x = x[0];
+        uint16_t raw_y = y[0];
 
         if (touched && point_count > 0 && !pressed) {
             TickType_t now = xTaskGetTickCount();
             if (now - last_trigger_tick > pdMS_TO_TICKS(TOUCH_RELEASE_MS)) {
+                bool logged_in = lexin_face_auth_is_logged_in();
+                ESP_LOGI(TAG, "touch screen=%d raw=(%u,%u) ui=(%u,%u)",
+                         (int)lexin_launcher_current_screen(), raw_x, raw_y, x[0], y[0]);
+                /* Lock / register screen touch handling (before launcher). */
+                lexin_face_auth_snapshot_t fas;
+                lexin_face_auth_get_snapshot(&fas);
+                if (!logged_in) {
+                    /* Right after a manual lock the finger that pressed the
+                     * launcher Lock button may still be on the glass at a
+                     * spot that overlaps lock-screen buttons (the WiFi entry
+                     * region). Swallow taps during the guard window. */
+                    if (manual_lock_tick != 0 &&
+                        now - manual_lock_tick < pdMS_TO_TICKS(MANUAL_LOCK_GUARD_MS)) {
+                        /* Mark as pressed so a finger held past the guard
+                         * window still needs a real release + new tap. */
+                        pressed = true;
+                        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                        continue;
+                    }
+                    if (lexin_launcher_current_screen() == LEXIN_SCREEN_WIFI) {
+                        handle_wifi_touch(x[0], y[0]);
+                        last_trigger_tick = now;
+                        pressed = true;
+                        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                        continue;
+                    }
+                    if (s_lock_name_input_label == NULL && lock_wifi_touch_hit(x[0], y[0])) {
+                        ESP_LOGI(TAG, "lock -> wifi page, touch raw=(%u,%u)",
+                                 x[0], y[0]);
+                        lexin_launcher_show_screen(LEXIN_SCREEN_WIFI);
+                        lvgl_show_wifi_page();
+                        last_trigger_tick = now;
+                        pressed = true;
+                        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                        continue;
+                    }
+                    /* "创建新用户" button on lock screen: x=64,y=280,w=200,h=56 */
+                    if (fas.state == LEXIN_FACE_AUTH_UNKNOWN &&
+                        x[0] >= 64 && x[0] < 264 && y[0] >= 280 && y[0] < 336) {
+                        ESP_LOGI(TAG, "lock -> register screen");
+                        lvgl_show_register_screen();
+                        last_trigger_tick = now;
+                        pressed = true;
+                        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                        continue;
+                    }
+                    /* Registration screen keyboard handle */
+                    if (s_lock_name_input_label != NULL) {
+                        lock_handle_register_touch(x[0], y[0]);
+                        last_trigger_tick = now;
+                        pressed = true;
+                        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                        continue;
+                    }
+                    /* Block all other touches while locked */
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                    continue;
+                }
+                if (lexin_launcher_current_screen() == LEXIN_SCREEN_WIFI) {
+                    handle_wifi_touch(x[0], y[0]);
+                    last_trigger_tick = now;
+                    pressed = true;
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                    continue;
+                }
+                if (lexin_launcher_current_screen() == LEXIN_SCREEN_EMOTION) {
+                    bool handled = handle_emotion_touch(x[0], y[0]);
+                    if (handled) {
+                        last_trigger_tick = now;
+                        pressed = true;
+                        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                        continue;
+                    }
+                }
+                if (lexin_launcher_current_screen() == LEXIN_SCREEN_PLAN) {
+                    handle_plan_touch(x[0], y[0]);
+                    last_trigger_tick = now;
+                    pressed = true;
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                    continue;
+                }
+                if (lexin_launcher_current_screen() == LEXIN_SCREEN_CALENDAR &&
+                    handle_calendar_touch(x[0], y[0])) {
+                    last_trigger_tick = now;
+                    pressed = true;
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                    continue;
+                }
+                if (lexin_launcher_current_screen() == LEXIN_SCREEN_LAUNCHER &&
+                    launcher_lock_touch_hit(x[0], y[0])) {
+                    ESP_LOGI(TAG, "touch x=%u y=%u -> manual lock", x[0], y[0]);
+                    lexin_face_auth_lock();
+                    lexin_launcher_show_launcher();
+                    lvgl_show_lock_screen();
+                    manual_lock_tick = now;
+                    last_trigger_tick = now;
+                    pressed = true;
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                    continue;
+                }
+                if (lexin_launcher_current_screen() == LEXIN_SCREEN_LAUNCHER &&
+                    launcher_wifi_touch_hit(x[0], y[0])) {
+                    ESP_LOGI(TAG, "touch x=%u y=%u -> wifi page", x[0], y[0]);
+                    lexin_launcher_show_screen(LEXIN_SCREEN_WIFI);
+                    lvgl_show_wifi_page();
+                    last_trigger_tick = now;
+                    pressed = true;
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+                    continue;
+                }
                 lexin_action_id_t action_id = x[0] < (LCD_H_RES / 2)
                     ? LEXIN_ACTION_WEATHER
                     : LEXIN_ACTION_TIME;
                 lexin_touch_event_t event = lexin_launcher_handle_touch(x[0], y[0]);
                 if (event.result == LEXIN_TOUCH_BACK) {
                     ESP_LOGI(TAG, "touch x=%u y=%u -> launcher", x[0], y[0]);
+                    if (lexin_launcher_current_screen() == LEXIN_SCREEN_VOICE) {
+                        lexin_voice_set_mode("chat");
+                    }
                     lexin_screen_show_idle();
                 } else if (event.result == LEXIN_TOUCH_OPEN_APP && event.has_action) {
                     action_id = event.action_id;
@@ -2112,6 +3932,11 @@ static void touch_task(void *arg)
                              action_id == LEXIN_ACTION_TIME ? "calendar" : "ai_insight");
                     lexin_screen_show_querying(action_id);
                     lexin_enqueue_trigger("touch", action_id, action_id);
+                    if (action_id == LEXIN_ACTION_TIME) {
+                        /* Pull this month's plan completion so the calendar
+                         * can colour each day by progress. */
+                        lexin_plan_fetch_month();
+                    }
                 } else if (event.result == LEXIN_TOUCH_OPEN_APP) {
                     lexin_interaction_record_screen(event.screen);
                     if (event.screen == LEXIN_SCREEN_PET) {
@@ -2120,6 +3945,12 @@ static void touch_task(void *arg)
                     } else if (event.screen == LEXIN_SCREEN_EMOTION) {
                         ESP_LOGI(TAG, "touch x=%u y=%u -> emotion page", x[0], y[0]);
                         lvgl_show_emotion_page();
+                    } else if (event.screen == LEXIN_SCREEN_WIFI) {
+                        ESP_LOGI(TAG, "touch x=%u y=%u -> wifi page", x[0], y[0]);
+                        lvgl_show_wifi_page();
+                    } else if (event.screen == LEXIN_SCREEN_VOICE) {
+                        ESP_LOGI(TAG, "touch x=%u y=%u -> voice page", x[0], y[0]);
+                        lvgl_show_voice_page();
                     } else {
                         ESP_LOGI(TAG, "touch x=%u y=%u -> suggestion page", x[0], y[0]);
                         lvgl_show_suggestion_page();
@@ -2128,8 +3959,19 @@ static void touch_task(void *arg)
                 last_trigger_tick = now;
             }
             pressed = true;
-        } else if (!touched || point_count == 0) {
-            pressed = false;
+            release_polls = 0;
+        } else if (touched && point_count > 0) {
+            /* Finger still down (already handled press) — not a release. */
+            release_polls = 0;
+        } else if (pressed) {
+            /* Only declare release after several consecutive empty polls so
+             * a single dropped GT911 report cannot re-arm the trigger while
+             * the finger is still down (which double-fires the same tap on
+             * whatever screen was just switched to). */
+            if (++release_polls >= TOUCH_RELEASE_POLLS) {
+                pressed = false;
+                release_polls = 0;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
@@ -2144,7 +3986,12 @@ static void screen_ui_task(void *arg)
     lvgl_init_display();
     lexin_launcher_init();
     lexin_interaction_init();
-    lexin_screen_show_idle();
+    for (int i = 0; i < 32; i++) {
+        s_plan_month_percent[i] = 255;   /* no plan yet for any day */
+    }
+    /* Start with lock screen; the main loop will transition to
+     * launcher once face auth succeeds. */
+    lvgl_show_lock_screen();
     bool touch_ready = init_touch();
 
     ESP_LOGI(TAG, "Touch UI ready: launcher apps (touch=%d)", touch_ready);
@@ -2161,7 +4008,13 @@ void lexin_start_screen_ui(void)
 
 void lexin_screen_show_idle(void)
 {
-    lexin_launcher_show_launcher();
+    if (!lexin_face_auth_is_logged_in()) {
+        lexin_launcher_show_launcher();
+        lvgl_show_lock_screen();
+        return;
+    }
+    /* lvgl_show_launcher() updates the screen state under the LVGL
+     * lock so state and display can never diverge. */
     lvgl_show_launcher();
 }
 
@@ -2197,17 +4050,20 @@ void lexin_screen_show_result_text(lexin_action_id_t action_id, const char *text
 {
     if (action_id == LEXIN_ACTION_WEATHER) {
         snprintf(s_cached_weather, sizeof(s_cached_weather), "%s", text ? text : "");
-        if (lexin_launcher_current_screen() == LEXIN_SCREEN_WEATHER) {
+        lexin_launcher_show_screen(LEXIN_SCREEN_WEATHER);
+        if (lexin_face_auth_is_logged_in()) {
             lvgl_show_weather_result_page(s_cached_weather);
         }
     } else if (action_id == LEXIN_ACTION_TIME) {
         snprintf(s_cached_calendar, sizeof(s_cached_calendar), "%s", text ? text : "");
-        if (lexin_launcher_current_screen() == LEXIN_SCREEN_CALENDAR) {
+        lexin_launcher_show_screen(LEXIN_SCREEN_CALENDAR);
+        if (lexin_face_auth_is_logged_in()) {
             lvgl_show_calendar_result_page(s_cached_calendar);
         }
     } else {
         update_pet_tip_from_insight(text);
-        if (lexin_launcher_current_screen() == LEXIN_SCREEN_SUGGESTION) {
+        lexin_launcher_show_screen(LEXIN_SCREEN_SUGGESTION);
+        if (lexin_face_auth_is_logged_in()) {
             lvgl_show_suggestion_page();
         }
     }
@@ -2218,7 +4074,8 @@ void lexin_screen_show_error(lexin_action_id_t action_id)
     lexin_screen_id_t expected = action_id == LEXIN_ACTION_WEATHER ?
         LEXIN_SCREEN_WEATHER : action_id == LEXIN_ACTION_TIME ?
         LEXIN_SCREEN_CALENDAR : LEXIN_SCREEN_SUGGESTION;
-    if (lexin_launcher_current_screen() == expected) {
+    lexin_launcher_show_screen(expected);
+    if (lexin_face_auth_is_logged_in()) {
         lvgl_show_error_page(action_id);
     }
 }
@@ -2259,5 +4116,129 @@ void lexin_screen_update_vision_context(const lexin_vision_snapshot_t *snapshot)
         snapshot->updated_at_ms - s_last_vision_page_refresh_ms >= 120) {
         s_last_vision_page_refresh_ms = snapshot->updated_at_ms;
         lvgl_refresh_emotion_live(snapshot);
+    }
+}
+
+void lexin_screen_set_capture_status(const char *status)
+{
+    snprintf(s_capture_status, sizeof(s_capture_status), "%s",
+             status ? status : "CAPTURE IDLE");
+    if (lexin_launcher_current_screen() != LEXIN_SCREEN_EMOTION ||
+        s_emotion_view != EMOTION_VIEW_LIVE ||
+        !s_lvgl_ready || !s_emotion_capture_status_label) {
+        return;
+    }
+    if (lvgl_port_lock(80)) {
+        lv_label_set_text(s_emotion_capture_status_label, s_capture_status);
+        lvgl_port_unlock();
+    }
+}
+
+bool lexin_screen_is_emotion_live(void)
+{
+    return lexin_launcher_current_screen() == LEXIN_SCREEN_EMOTION &&
+           s_emotion_view == EMOTION_VIEW_LIVE;
+}
+
+void lexin_screen_show_emotion_report(const char *text, bool monthly)
+{
+    lvgl_show_emotion_report_page(text, monthly);
+}
+
+void lexin_screen_show_plan(void)
+{
+    s_plan_day_view = false;
+    s_plan_recording = false;
+    lexin_voice_set_mode("chat");
+    /* Show immediately with whatever we have, then refresh from proxy. */
+    lvgl_show_plan_page();
+    lexin_plan_fetch_today();
+}
+
+void lexin_screen_update_plan(const char *plan_text)
+{
+    parse_plan_text(plan_text);
+    s_plan_day_view = false;
+    if (s_lvgl_ready && lvgl_port_lock(300)) {
+        if (lexin_launcher_current_screen() == LEXIN_SCREEN_PLAN) {
+            lvgl_show_plan_page();
+        }
+        lvgl_port_unlock();
+    }
+}
+
+void lexin_screen_update_plan_day(const char *plan_text)
+{
+    parse_plan_text(plan_text);
+    s_plan_day_view = true;
+    char date[24];
+    copy_field_value(plan_text, "DATE:", date, sizeof(date));
+    /* DATE is YYYY-MM-DD; show MM-DD in the header. */
+    if (strlen(date) >= 10) {
+        snprintf(s_plan_day_title, sizeof(s_plan_day_title), "%c%c-%c%c 的计划",
+                 date[5], date[6], date[8], date[9]);
+        s_plan_view_year = atoi(date);
+        s_plan_view_month = atoi(date + 5);
+        s_plan_view_day = atoi(date + 8);
+    } else {
+        snprintf(s_plan_day_title, sizeof(s_plan_day_title), "计划记录");
+        s_plan_view_year = 0;
+        s_plan_view_month = 0;
+        s_plan_view_day = 0;
+    }
+    if (s_lvgl_ready && lvgl_port_lock(300)) {
+        lvgl_show_plan_page();
+        lvgl_port_unlock();
+    }
+}
+
+void lexin_screen_update_plan_month(const char *month_text)
+{
+    for (int i = 0; i < 32; i++) {
+        s_plan_month_percent[i] = 255;
+    }
+    const char *p = month_text ? strstr(month_text, "PERCENTS:") : NULL;
+    if (p) {
+        p += strlen("PERCENTS:");
+        while (*p) {
+            while (*p == ' ' || *p == ',') {
+                p++;
+            }
+            if (*p < '0' || *p > '9') {
+                break;
+            }
+            int day = atoi(p);
+            while (*p >= '0' && *p <= '9') {
+                p++;
+            }
+            if (*p == ':') {
+                p++;
+                int pct = atoi(p);
+                while (*p >= '0' && *p <= '9') {
+                    p++;
+                }
+                if (day >= 1 && day <= 31) {
+                    s_plan_month_percent[day] = (uint8_t)(pct > 100 ? 100 : (pct < 0 ? 0 : pct));
+                }
+            }
+        }
+    }
+    if (s_lvgl_ready && lvgl_port_lock(300)) {
+        if (lexin_launcher_current_screen() == LEXIN_SCREEN_CALENDAR &&
+            s_cached_calendar[0] != '\0') {
+            lvgl_show_calendar_result_page(s_cached_calendar);
+        }
+        lvgl_port_unlock();
+    }
+}
+
+void lexin_screen_set_plan_recording(bool recording)
+{
+    s_plan_recording = recording;
+    if (s_lvgl_ready && lvgl_port_lock(200)) {
+        if (lexin_launcher_current_screen() == LEXIN_SCREEN_PLAN) {
+            lvgl_show_plan_page();
+        }
+        lvgl_port_unlock();
     }
 }
