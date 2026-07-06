@@ -1390,6 +1390,20 @@ static const char *lock_state_sub_text(lexin_face_auth_state_t state)
     }
 }
 
+static bool lock_can_create_user(const lexin_face_auth_snapshot_t *s)
+{
+    if (!s || s->recognized) return false;
+    if (s->state == LEXIN_FACE_AUTH_RECOGNIZED ||
+        s->state == LEXIN_FACE_AUTH_REGISTERING ||
+        s->state == LEXIN_FACE_AUTH_REGISTERED) {
+        return false;
+    }
+    if (s->state == LEXIN_FACE_AUTH_UNKNOWN) return true;
+    return s->face_detected &&
+           s->face_w >= 48 &&
+           s->face_h >= 48;
+}
+
 static bool lock_has_preview_pixels(void)
 {
     return s_emotion_preview_pixels != NULL;
@@ -1511,10 +1525,11 @@ static void lock_update_face_box(const lexin_face_auth_snapshot_t *s)
 
 static void lock_show_action_button(const char *label)
 {
+    (void)label;
     if (!s_lock_action_btn) return;
     lv_obj_remove_flag(s_lock_action_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *btn_label = lv_obj_get_child(s_lock_action_btn, 0);
-    if (btn_label) lv_label_set_text(btn_label, label);
+    if (btn_label) lv_label_set_text(btn_label, "Create User");
 }
 
 static void lock_hide_action_button(void)
@@ -1756,7 +1771,7 @@ void lexin_screen_update_face_auth(const lexin_face_auth_snapshot_t *s)
     }
 
     /* Action button */
-    if (s->state == LEXIN_FACE_AUTH_UNKNOWN) {
+    if (lock_can_create_user(s)) {
         lock_show_action_button("创建新用户");
     } else if (s->state == LEXIN_FACE_AUTH_REGISTERED ||
                s->state == LEXIN_FACE_AUTH_RECOGNIZED) {
@@ -3841,7 +3856,7 @@ static void touch_task(void *arg)
                         continue;
                     }
                     /* "创建新用户" button on lock screen: x=64,y=280,w=200,h=56 */
-                    if (fas.state == LEXIN_FACE_AUTH_UNKNOWN &&
+                    if (lock_can_create_user(&fas) &&
                         x[0] >= 64 && x[0] < 264 && y[0] >= 280 && y[0] < 336) {
                         ESP_LOGI(TAG, "lock -> register screen");
                         lvgl_show_register_screen();
