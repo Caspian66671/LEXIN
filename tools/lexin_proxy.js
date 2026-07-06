@@ -1586,6 +1586,31 @@ function readWavFromRequest(req, maxBytes) {
   });
 }
 
+function parseAsrStdout(stdout) {
+  const text = String(stdout || "").trim();
+  if (!text) {
+    throw new Error("asr produced no output");
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    /* Some ASR dependencies print notices to stdout before the JSON line.
+     * Keep the on-screen transcript clean by taking the final JSON object
+     * when one is present. */
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line.startsWith("{") || !line.endsWith("}")) continue;
+      try {
+        return JSON.parse(line);
+      } catch (_) {
+        /* Try the previous line. */
+      }
+    }
+    return { text };
+  }
+}
+
 function runExternalAsr(wavPath) {
   return new Promise((resolve, reject) => {
     if (!LEXIN_ASR_CMD) {
@@ -1615,15 +1640,10 @@ function runExternalAsr(wavPath) {
         return;
       }
       const stdout = Buffer.concat(out).toString("utf8").trim();
-      if (!stdout) {
-        reject(new Error("asr produced no output"));
-        return;
-      }
       try {
-        resolve(JSON.parse(stdout));
+        resolve(parseAsrStdout(stdout));
       } catch (e) {
-        /* Allow non-JSON stdout: treat the whole text as the transcript. */
-        resolve({ text: stdout });
+        reject(e);
       }
     });
   });

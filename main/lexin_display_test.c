@@ -2894,8 +2894,8 @@ static bool lvgl_show_voice_page(void)
     s_voice_status_label = lvgl_label(scr, "BOOTING", 432, 124,
                                       &lv_font_montserrat_20, 0x10283e);
     lvgl_label_width(s_voice_status_label, 240);
-    s_voice_backend_label = lvgl_label(scr, "backend --", 432, 154,
-                                       &lv_font_montserrat_20, 0x577489);
+    s_voice_backend_label = lvgl_label(scr, "未连接", 432, 154,
+                                       &lexin_cn_20, 0x577489);
     lvgl_label_width(s_voice_backend_label, 240);
     s_voice_meter_label = lvgl_label(scr, "RMS 0", 700, 124,
                                      &lv_font_montserrat_20, 0x9465ff);
@@ -2923,9 +2923,11 @@ static bool lvgl_show_voice_page(void)
     lvgl_label(reply_card, "你说", 24, 16, &lexin_cn_20, 0x577489);
     s_voice_transcript_label = lvgl_label(reply_card, "（等待识别）", 24, 46, &lexin_cn_20, 0x10283e);
     lvgl_label_width(s_voice_transcript_label, 912);
+    lv_label_set_long_mode(s_voice_transcript_label, LV_LABEL_LONG_WRAP);
     lvgl_label(reply_card, "回复", 24, 86, &lexin_cn_20, 0x577489);
     s_voice_reply_label = lvgl_label(reply_card, "（暂无回复）", 24, 116, &lexin_cn_28, 0xff4f8a);
     lvgl_label_width(s_voice_reply_label, 912);
+    lv_label_set_long_mode(s_voice_reply_label, LV_LABEL_LONG_WRAP);
 
     lv_obj_t *reply_title_mask = lvgl_card(reply_card, 18, 10, 924, 110, 0xffffff, 0);
     lv_obj_set_style_bg_opa(reply_title_mask, LV_OPA_90, 0);
