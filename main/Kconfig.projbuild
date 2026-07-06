@@ -22,7 +22,7 @@ menu "LeXin Configuration"
 
     config LEXIN_PROXY_PREFERRED_HOST
         string "Preferred fast proxy host IP"
-        default "172.31.169.142"
+        default ""
 
     config LEXIN_PROXY_PORT
         int "Fast local proxy port"

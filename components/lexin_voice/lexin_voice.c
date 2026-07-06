@@ -81,6 +81,8 @@ static const char *TAG = "lexin_voice";
     ((LEXIN_VOICE_SAMPLE_RATE * LEXIN_VOICE_FRAME_MS) / 1000)
 #define LEXIN_VOICE_DISCOVERY_TIMEOUT_MS 60
 #define LEXIN_VOICE_UDP_DISCOVERY_PORT (CONFIG_LEXIN_PROXY_PORT + 1)
+#define LEXIN_VOICE_DISCOVERY_MAX_HOSTS 254
+#define LEXIN_VOICE_HTTP_TIMEOUT_MS 6000
 
 /* Snapshot of the world for the voice service. Mirrors
  * lexin_vision_snapshot_t in spirit: small, copy-by-value, refreshed
@@ -370,14 +372,17 @@ static const char *ensure_proxy_url(void)
         return s_voice.proxy_url;
     }
 
-    /* Last resort: walk the local /24. */
+    /* Last resort: walk the local /24. Voice uses its own lightweight
+     * discovery path, so keep the scan range as wide as the main proxy
+     * discovery. A narrow scan can miss the PC and leave the UI stuck in
+     * UPLOAD even though weather/calendar already work. */
     if (!have_ip) {
         return NULL;
     }
     uint32_t ip_addr = ntohl(ip.ip.addr);
     uint32_t network = ip_addr & 0xffffff00UL;
     uint8_t self = (uint8_t)(ip_addr & 0xffUL);
-    for (int d = 1; d < 32; d++) {
+    for (int d = 1; d <= LEXIN_VOICE_DISCOVERY_MAX_HOSTS; d++) {
         int cands[2] = {self - d, self + d};
         for (int i = 0; i < 2; i++) {
             int off = cands[i];
@@ -512,7 +517,7 @@ static bool upload_utterance(const char *proxy_url, const utterance_t *utt)
         .url = url,
         .method = HTTP_METHOD_POST,
         .event_handler = upload_http_event,
-        .timeout_ms = 15000,
+        .timeout_ms = LEXIN_VOICE_HTTP_TIMEOUT_MS,
         .user_data = &resp,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -547,6 +552,7 @@ static bool upload_utterance(const char *proxy_url, const utterance_t *utt)
     if (err != ESP_OK || status < 200 || status >= 300 || resp.len == 0) {
         ESP_LOGW(TAG, "voice upload failed err=%s status=%d len=%u",
                     esp_err_to_name(err), status, (unsigned)resp.len);
+        s_voice.proxy_url[0] = '\0';
         esp_http_client_cleanup(client);
         free(body);
         free(resp.buf);
